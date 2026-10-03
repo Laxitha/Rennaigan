@@ -41,6 +41,9 @@ def soften(score: float, threshold: float) -> float:
     return score if score >= threshold or threshold <= 0 else score * score / threshold
 
 
+CORROBORATION_MIN = 0.6
+
+
 def _no_data(f: dict) -> bool:
     """A detector saying it had nothing to examine (no face, no speech, no manifest)."""
     return f["score"] == 0.0 and f["note"].startswith("no_")
@@ -72,7 +75,9 @@ def module_score(findings: list[dict], mode: str, thresholds: dict | None = None
 
     # Some detectors raise alarms on ordinary media when used alone (measured: scripts/evaluate.py).
     # Their score is capped unless a second detector in the module is also over its threshold.
-    over = {f["model"] for score, f in results if score >= float(thresholds.get(f["model"], 0.5))}
+    # "Agrees" means clearly over the threshold: a score sitting on it (two sub-classifiers
+    # that disagree average to 0.5) is not agreement.
+    over = {f["model"] for score, f in results if score >= max(float(thresholds.get(f["model"], 0.5)), CORROBORATION_MIN)}
     best, top = 0.0, None
     for score, finding in results:
         cap = (needs_corroboration or {}).get(finding["model"])
