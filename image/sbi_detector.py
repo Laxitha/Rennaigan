@@ -4,7 +4,7 @@ Setup:
   1. git clone https://github.com/mapooon/selfblendedimages.git repos/sbi
   2. Download weights: FFc23.tar (compressed video, best for social media) → weights/sbi/FFc23.tar
      Or FFraw.tar for raw video
-  3. pip install efficientnet_pytorch retinaface_pytorch
+  3. pip install efficientnet_pytorch
 
 Input: face crop 380x380, ImageNet normalization.
 Output: P(fake) per face.
@@ -12,6 +12,7 @@ Output: P(fake) per face.
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from common.face import detect_faces, crop_face
 
 WEIGHTS_PATH = Path("weights/sbi/FFc23.tar")
 MODEL = None
+DEVICE = None
 THRESHOLD = 0.5
 INPUT_SIZE = 380
 
@@ -38,21 +40,33 @@ TRANSFORM = transforms.Compose([
 
 
 def load_model():
-    global MODEL
+    global MODEL, DEVICE
     if MODEL is not None:
         return MODEL
 
-    # TODO: uncomment after cloning SBI repo
-    # import sys
-    # sys.path.insert(0, "repos/sbi")
-    # from efficientnet_pytorch import EfficientNet
-    # MODEL = EfficientNet.from_name("efficientnet-b4", num_classes=1)
-    # ckpt = torch.load(WEIGHTS_PATH, map_location="cpu")
-    # MODEL.load_state_dict(ckpt["model"])
-    # MODEL.eval()
-    # if torch.cuda.is_available():
-    #     MODEL = MODEL.cuda()
-    raise NotImplementedError("Clone SBI repo and download FFc23.tar weights.")
+    if not WEIGHTS_PATH.exists():
+        raise FileNotFoundError(
+            f"SBI weights not found at {WEIGHTS_PATH}.\n"
+            "Download FFc23.tar and place in weights/sbi/"
+        )
+
+    from efficientnet_pytorch import EfficientNet
+
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    MODEL = EfficientNet.from_name("efficientnet-b4", num_classes=1)
+    ckpt = torch.load(str(WEIGHTS_PATH), map_location=DEVICE)
+
+    if "model" in ckpt:
+        MODEL.load_state_dict(ckpt["model"])
+    elif "state_dict" in ckpt:
+        MODEL.load_state_dict(ckpt["state_dict"])
+    else:
+        state = {k.replace("module.", ""): v for k, v in ckpt.items()}
+        MODEL.load_state_dict(state)
+
+    MODEL.eval()
+    MODEL = MODEL.to(DEVICE)
+    return MODEL
 
 
 def analyze_image(image: np.ndarray, file_path: Path | None = None) -> list[Finding]:
@@ -62,7 +76,6 @@ def analyze_image(image: np.ndarray, file_path: Path | None = None) -> list[Find
         return []
 
     model = load_model()
-    device = next(model.parameters()).device
     findings: list[Finding] = []
 
     crops = []
@@ -73,8 +86,8 @@ def analyze_image(image: np.ndarray, file_path: Path | None = None) -> list[Find
         crops.append(TRANSFORM(crop_pil))
         boxes.append(face["box"])
 
-    batch = torch.stack(crops).to(device)
-    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=device.type == "cuda"):
+    batch = torch.stack(crops).to(DEVICE)
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=DEVICE.type == "cuda"):
         logits = model(batch)
         scores = torch.sigmoid(logits).squeeze(-1).cpu().tolist()
 

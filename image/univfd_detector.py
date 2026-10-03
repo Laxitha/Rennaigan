@@ -1,9 +1,9 @@
 """UniversalFakeDetect (UnivFD) — AI-generated image detector.
 
 Setup:
-  1. git clone https://github.com/WisconsinAIVision/UniversalFakeDetect.git repos/univfd
-  2. Download fc_weights.pth → pretrained_weights/fc_weights.pth
-  3. pip install open_clip_torch
+  1. pip install open_clip_torch
+  2. Download fc_weights.pth → weights/univfd/fc_weights.pth
+     (from https://github.com/WisconsinAIVision/UniversalFakeDetect)
 
 Input: whole image, 224x224 center crop, CLIP normalization.
 Output: P(fake) per image (sigmoid).
@@ -23,7 +23,6 @@ from common.utils import file_sha256
 
 WEIGHTS_PATH = Path("weights/univfd/fc_weights.pth")
 MODEL = None
-PREPROCESS = None
 THRESHOLD = 0.5
 INPUT_SIZE = 224
 
@@ -43,18 +42,27 @@ def load_model():
     if MODEL is not None:
         return MODEL
 
-    # TODO: uncomment after cloning UnivFD repo
-    # import open_clip
-    # clip_model, _, _ = open_clip.create_model_and_transforms("ViT-L-14", pretrained="openai")
-    # clip_model.eval()
-    # fc = torch.nn.Linear(768, 1)
-    # fc.load_state_dict(torch.load(WEIGHTS_PATH, map_location="cpu"))
-    # fc.eval()
-    # device = "cuda" if torch.cuda.is_available() else "cpu"
-    # clip_model = clip_model.to(device)
-    # fc = fc.to(device)
-    # MODEL = (clip_model, fc, device)
-    raise NotImplementedError("Clone UnivFD repo and download fc_weights.pth.")
+    if not WEIGHTS_PATH.exists():
+        raise FileNotFoundError(
+            f"UnivFD weights not found at {WEIGHTS_PATH}.\n"
+            "Download fc_weights.pth from the UniversalFakeDetect repo."
+        )
+
+    import open_clip
+
+    clip_model, _, _ = open_clip.create_model_and_transforms("ViT-L-14", pretrained="openai")
+    clip_model.eval()
+
+    fc = torch.nn.Linear(768, 1)
+    fc.load_state_dict(torch.load(str(WEIGHTS_PATH), map_location="cpu"))
+    fc.eval()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    clip_model = clip_model.to(device)
+    fc = fc.to(device)
+
+    MODEL = (clip_model, fc, device)
+    return MODEL
 
 
 def analyze(file_path: Path) -> ModuleResult:

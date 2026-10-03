@@ -63,7 +63,6 @@ def scores_to_intervals(
     if active and timestamps[-1] - start >= MIN_INTERVAL_SEC:
         intervals.append((start, timestamps[-1], float(np.mean(seg_scores))))
 
-    # Merge intervals closer than MERGE_GAP_SEC
     merged = []
     for interval in intervals:
         if merged and interval[0] - merged[-1][1] < MERGE_GAP_SEC:
@@ -90,6 +89,8 @@ def analyze(file_path: Path, frames_dir: Path | None = None) -> ModuleResult:
     if not frame_files:
         return ModuleResult(module="video", file_sha256=sha, findings=[], runtime_s=time.time() - t0)
 
+    from image.sbi_detector import analyze_image
+
     timestamps = []
     raw_scores = []
     no_face_count = 0
@@ -101,26 +102,17 @@ def analyze(file_path: Path, frames_dir: Path | None = None) -> ModuleResult:
             continue
 
         try:
-            from common.face import detect_faces, get_largest_face
-            faces = detect_faces(img)
-            largest = get_largest_face(faces)
-            if largest is None:
-                no_face_count += 1
-                timestamps.append(ts)
-                raw_scores.append(0.0)
-                continue
+            face_findings = analyze_image(img)
+            max_score = max((f.score for f in face_findings), default=0.0)
+        except (FileNotFoundError, ImportError):
+            max_score = 0.0
+            no_face_count += 1
 
-            # TODO: call SBI analyze_image on the frame
-            # from image.sbi_detector import analyze_image
-            # face_findings = analyze_image(img)
-            # max_score = max((f.score for f in face_findings), default=0.0)
-            max_score = 0.0  # placeholder
+        if max_score == 0.0 and not face_findings:
+            no_face_count += 1
 
-            timestamps.append(ts)
-            raw_scores.append(max_score)
-        except (NotImplementedError, ImportError):
-            timestamps.append(ts)
-            raw_scores.append(0.0)
+        timestamps.append(ts)
+        raw_scores.append(max_score)
 
     if not timestamps:
         return ModuleResult(module="video", file_sha256=sha, findings=[], runtime_s=time.time() - t0)
@@ -128,7 +120,6 @@ def analyze(file_path: Path, frames_dir: Path | None = None) -> ModuleResult:
     smoothed = smooth_scores(raw_scores)
     intervals = scores_to_intervals(timestamps, smoothed)
 
-    # Clip-level score: 90th percentile (catches partial fakes that mean would dilute)
     clip_score = float(np.percentile(smoothed, 90)) if smoothed else 0.0
 
     findings = [
