@@ -47,6 +47,7 @@ MOUTH = slice(48, 68)
 CROP = 96
 INPUT = 88
 WINDOW_MARGIN = 12
+LANDMARK_EVERY = 3
 GRAY_MEAN, GRAY_STD = 0.421, 0.165
 THRESHOLD = 0.5
 
@@ -164,8 +165,22 @@ def extract_mouth_segments(video25: Path, breaks: frozenset[int] = frozenset()) 
                 segments.append((run_start, np.stack(crops)))
         run = None
 
+    def push(at: int, rgb: np.ndarray, landmarks: np.ndarray) -> None:
+        nonlocal run, run_start
+        if run is None:
+            run, run_start = _RunCropper(), at
+        try:
+            run.push(rgb, landmarks)
+        except Exception:
+            close()
+
+    # The landmark network runs on every LANDMARK_EVERY-th frame; the frames between are
+    # interpolated. The crop only needs the mouth position, which the pipeline already smooths
+    # over 12 frames, and this is what makes the detector usable in interactive time.
     cap = cv2.VideoCapture(str(video25))
     index = 0
+    previous: np.ndarray | None = None      # landmarks at the last measured frame
+    waiting: list[tuple[int, np.ndarray]] = []  # frames since then, not yet placed
     while index < MAX_SECONDS * FPS:
         ok, frame = cap.read()
         if not ok:
@@ -173,16 +188,19 @@ def extract_mouth_segments(video25: Path, breaks: frozenset[int] = frozenset()) 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         if index in breaks:  # a join between sampled windows: motion is not continuous across it
             close()
-        landmarks = _landmarks(rgb)
-        if landmarks is None:
-            close()
-        else:
-            if run is None:
-                run, run_start = _RunCropper(), index
-            try:
-                run.push(rgb, landmarks)
-            except Exception:
+            previous, waiting = None, []
+        if previous is None or len(waiting) == LANDMARK_EVERY - 1:
+            landmarks = _landmarks(rgb)
+            if landmarks is None:
                 close()
+                previous, waiting = None, []
+            else:
+                for step, (at, held) in enumerate(waiting, start=1):
+                    push(at, held, previous + (landmarks - previous) * (step / (len(waiting) + 1)))
+                push(index, rgb, landmarks)
+                previous, waiting = landmarks, []
+        else:
+            waiting.append((index, rgb))
         index += 1
     cap.release()
     close()

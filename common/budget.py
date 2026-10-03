@@ -2,7 +2,7 @@
 
 With a GPU the full analysis runs. Without one, the frame-by-frame models take minutes per
 second of video, so a reduced plan is used and the case says so: fewer sampled frames, shorter
-windows, and the two heaviest checks (lip sync and optical flow) are skipped.
+windows, and the heaviest checks (lip motion, lip sync and optical flow) are skipped.
 """
 
 from __future__ import annotations
@@ -25,9 +25,9 @@ def has_gpu() -> bool:
 def get() -> dict:
     if has_gpu():
         return {"reduced": False, "max_frames": 96, "aigen_frames": 16, "window_s": 6.0, "max_windows": 4,
-                "lip_sync": True, "optical_flow": True}
-    return {"reduced": True, "max_frames": 36, "aigen_frames": 6, "window_s": 6.0, "max_windows": 2,
-            "lip_sync": False, "optical_flow": False}
+                "lip_motion": True, "lip_sync": True, "optical_flow": True}
+    return {"reduced": True, "max_frames": 16, "aigen_frames": 4, "window_s": 6.0, "max_windows": 2,
+            "lip_motion": False, "lip_sync": False, "optical_flow": False}
 
 
-REDUCED_NOTE = "No GPU on this machine: reduced analysis (fewer frames, shorter windows, lip sync and optical flow skipped)."
+REDUCED_NOTE = "No GPU on this machine: reduced analysis (fewer frames, shorter windows, lip motion, lip sync and optical flow skipped)."

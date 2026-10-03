@@ -59,6 +59,8 @@ def analyze(file_path: Path) -> ModuleResult:
         }
         if not plan_["lip_sync"]:
             del jobs["syncnet"]
+        if not plan_["lip_motion"]:
+            del jobs["lipforensics"]
 
         skipped = []
         if not has_face:
