@@ -59,6 +59,7 @@ def free_port() -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--gateway-only", action="store_true", help="do not start the detector services")
+    parser.add_argument("--separate", action="store_true", help="one process per detector module instead of sharing")
     parser.add_argument("--host", help="gateway bind address (default from config.yaml, 127.0.0.1)")
     parser.add_argument("--port", type=int, help="gateway port (default from config.yaml, 8010)")
     args = parser.parse_args()
@@ -69,9 +70,11 @@ def main() -> None:
     logs.mkdir(parents=True, exist_ok=True)
 
     children: dict[str, subprocess.Popen] = {}
-    atexit.register(lambda: [p.terminate() for p in children.values() if p.poll() is None])
+    atexit.register(lambda: [p.terminate() for p in set(children.values()) if p.poll() is None])
 
     if not args.gateway_only:
+        # Modules that use the same interpreter share one process, so shared models load once.
+        groups: dict[str, list[tuple[str, int]]] = {}
         for module in config.MODULES:
             service = cfg["services"][module]
             url = urlparse(service["url"])
@@ -89,11 +92,23 @@ def main() -> None:
                 os.environ[f"{module.upper()}_URL"] = service["url"]
                 print(f"  {module:<9} port {url.port} is used by another program, using {port}")
             python = os.environ.get(f"RENNAIGAN_PYTHON_{module.upper()}") or service.get("python") or sys.executable
-            children[module] = subprocess.Popen(
-                [python, "-m", "uvicorn", f"{module}.app:app", "--host", "127.0.0.1", "--port", str(port)],
-                cwd=ROOT, stdout=open(logs / f"{module}.log", "w"), stderr=subprocess.STDOUT,
+            key = module if args.separate else python
+            groups.setdefault(key, []).append((module, port, python))
+
+        for members in groups.values():
+            names = [m for m, _, _ in members]
+            log = logs / f"{'+'.join(names)}.log"
+            process = subprocess.Popen(
+                [members[0][2], "-m", "common.multi", *[f"{m}:{p}" for m, p, _ in members]],
+                cwd=ROOT, stdout=open(log, "w"), stderr=subprocess.STDOUT,
                 env={**os.environ, "MPLBACKEND": "Agg"},  # a notebook's inline backend does not exist in a service
             )
+            for name in names:
+                children[name] = process
+                link = logs / f"{name}.log"
+                if link != log:
+                    link.unlink(missing_ok=True)
+                    link.symlink_to(log.name)
 
         # Model imports can take a while. Report what is known after a short wait and carry on.
         deadline = time.time() + 25

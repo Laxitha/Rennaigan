@@ -36,7 +36,8 @@ def stop() -> None:
     out = subprocess.run(["ps", "-eo", "pid,args"], capture_output=True, text=True).stdout
     for line in out.splitlines()[1:]:
         pid, _, args = line.strip().partition(" ")
-        if int(pid) != os.getpid() and ("start.py" in args or (".app:app" in args and "uvicorn" in args) or "backend.gateway" in args):
+        # Only Python processes: a shell whose command line merely mentions start.py is not the backend.
+        if int(pid) != os.getpid() and "python" in args.split(" ")[0] and ("start.py" in args or "common.multi" in args or (".app:app" in args and "uvicorn" in args) or "backend.gateway" in args):
             try:
                 os.kill(int(pid), signal.SIGKILL)
             except ProcessLookupError:

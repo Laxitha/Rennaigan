@@ -14,6 +14,8 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 
 from .schema import ModuleResult
 
+_WARMUP_LOCK = threading.Lock()
+
 
 def create_app(
     module_name: str,
@@ -24,10 +26,13 @@ def create_app(
     state = {"ready": warmup is None}
 
     def _warm():
-        try:
-            warmup()
-        finally:
-            state["ready"] = True
+        # One at a time: modules sharing a process share models, and loading them
+        # concurrently would load some twice.
+        with _WARMUP_LOCK:
+            try:
+                warmup()
+            finally:
+                state["ready"] = True
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
