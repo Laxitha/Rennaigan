@@ -36,6 +36,7 @@ from .smoothness import compute_jerk
 
 FPS = 25
 FACE_EVERY = 8   # frames between face detections (about 3 per second)
+EMBED_EVERY = 24 # frames between identity embeddings (about 1 per second)
 FLOW_EVERY = 5   # frames between optical-flow pairs (5 per second)
 
 
@@ -79,9 +80,12 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
             landmarks.append(get_landmarks(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
 
             if index % FACE_EVERY == 0:
-                face = get_largest_face(detect_faces(frame, embeddings=True))
+                # Boxes are cheap; the identity embedding is the slow part, so it is taken once a second.
+                want_embedding = index % EMBED_EVERY == 0
+                face = get_largest_face(detect_faces(frame, embeddings=want_embedding))
                 box = face["box"] if face else None
-                embeddings.append((index, face.get("embedding") if face else None))
+                if want_embedding:
+                    embeddings.append((index, face.get("embedding") if face else None))
             # the frame after a flow sample completes the pair
             if plan_["optical_flow"] and index % FLOW_EVERY == 1 and previous is not None and box is not None:
                 flow_pairs.append((index - 1, previous, frame, box))
@@ -133,7 +137,7 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
         check("head_pose", source_start, lambda: analyze_head_pose(part, frame_shape))
         check("smoothness", source_start, lambda: compute_jerk(part))
         check("identity_drift", source_start,
-              lambda: analyze_identity_drift([e for i, e in embeddings if first <= i < last], fps=FPS / FACE_EVERY))
+              lambda: analyze_identity_drift([e for i, e in embeddings if first <= i < last], fps=FPS / EMBED_EVERY))
         check("blink", source_start, lambda: analyze_blinks(part))
 
     findings += [Finding(model=name, score=0.0, note=f"error: {message}") for name, message in failed.items()]

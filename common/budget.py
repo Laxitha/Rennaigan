@@ -24,7 +24,7 @@ def has_gpu() -> bool:
 
 def get() -> dict:
     if has_gpu():
-        return {"reduced": False, "max_frames": 180, "aigen_frames": 16, "window_s": 8.0, "max_windows": 5,
+        return {"reduced": False, "max_frames": 96, "aigen_frames": 16, "window_s": 6.0, "max_windows": 4,
                 "lip_sync": True, "optical_flow": True}
     return {"reduced": True, "max_frames": 36, "aigen_frames": 6, "window_s": 6.0, "max_windows": 2,
             "lip_sync": False, "optical_flow": False}
