@@ -12,6 +12,13 @@ from common.service import create_app
 from common.utils import file_sha256
 
 
+EDITING_SOFTWARE = (
+    "photoshop", "gimp", "lightroom", "affinity", "pixelmator", "snapseed", "facetune", "picsart", "canva", "paint.net",
+    "premiere", "after effects", "final cut", "davinci", "capcut", "imovie", "filmora", "audacity", "audition",
+    "faceapp", "reface", "deepfacelab", "faceswap", "midjourney", "stable diffusion", "dall", "firefly",
+)
+
+
 def run_cmd(cmd: list[str]) -> dict | None:
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -28,8 +35,10 @@ def run_exiftool(file_path: Path) -> tuple[dict | None, list[Finding]]:
     meta = data[0] if isinstance(data, list) else data
     findings: list[Finding] = []
 
-    software = meta.get("Software", "") or meta.get("CreatorTool", "")
-    if software:
+    # Only real editors count. Encoder and muxer tags (Lavf, a camera's firmware name) are on
+    # almost every file and say nothing about editing.
+    software = str(meta.get("Software", "") or meta.get("CreatorTool", ""))
+    if any(name in software.lower() for name in EDITING_SOFTWARE):
         findings.append(Finding(
             model="exiftool",
             score=0.3,

@@ -338,3 +338,18 @@ def test_fusion_uses_aggregates_and_softens_subthreshold_scores(cfg):
 
     sustained = {**noisy, "findings": noisy["findings"] + [{"model": "ssl_aasist", "score": 0.95, "kind": "signal", "note": "synthetic_speech_interval: 3 consecutive windows flagged"}]}
     assert fuse({"audio": sustained}, ["audio"], "public", cfg)["label"] == "High manipulation indicators"
+
+
+def test_failed_detector_plus_idle_one_is_unavailable_not_real(cfg):
+    """Seen live: the voice model crashed, the speaker check had no reference, and the file was called real."""
+    from backend.detectors import normalize
+    from backend.assess import fusion_verdict
+    raw = [{"model": "ssl_aasist", "score": 0.0, "note": "error: No module named 'fairseq'"},
+           {"model": "ecapa", "score": 0.0, "note": "no_reference_audio_provided"}]
+    findings, errored = normalize("audio", raw, 0.3)
+    usable = [f for f in findings if f["kind"] != "error" and not (f["score"] == 0.0 and f["note"].startswith("no_"))]
+    assert errored == {"ssl_aasist"} and usable == []
+    runs = {"audio": {"info": {"status": "unavailable"}, "coverage": 0.0, "findings": findings},
+            "metadata": {"info": {"status": "ok"}, "coverage": 1.0, "findings": [{"model": "ffprobe", "score": 0.2, "kind": "info", "note": "encoder_detected"}]}}
+    fused = fuse(runs, ["audio", "metadata"], "public", cfg)
+    assert fused["label"] == "Inconclusive" and fusion_verdict(fused, cfg)["verdict"] == "uncertain"

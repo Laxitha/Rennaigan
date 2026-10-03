@@ -106,7 +106,9 @@ async def run_module(client: httpx.AsyncClient, module: str, url: str, path: Pat
     findings, errored = normalize(module, raw.get("findings") or [], signal_floor)
     expected = len(MODULE_DETECTORS.get(module, [])) or 1
     coverage = 1.0 - min(len(errored), expected) / expected
-    usable = [f for f in findings if f["kind"] != "error"]
+    # A detector reporting that it had nothing to work with (no reference voice, no face) did
+    # not examine the file, so it does not make a module with failed detectors "partly working".
+    usable = [f for f in findings if f["kind"] != "error" and not (f["score"] == 0.0 and f["note"].startswith("no_"))]
 
     if errored and not usable:
         status = "unavailable"
