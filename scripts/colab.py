@@ -4,6 +4,8 @@
     python scripts/colab.py restart    stop everything, start services + gateway, wait until ready
     python scripts/colab.py status     which services answer, and the log tail of those that do not
     python scripts/colab.py selftest   analyse the bundled talking-head clip, frame and voice
+    python scripts/colab.py tunnel     public https address for the gateway
+    python scripts/colab.py up         restart, then tunnel
 
 The notebook calls this script, so `git pull` is enough to pick up fixes: the notebook cells
 themselves do not change when the repository does.
@@ -118,6 +120,32 @@ def selftest() -> None:
     print("\nThis clip is a genuine recording: the verdict should be REAL with low detector scores.")
 
 
+def tunnel() -> None:
+    """Open a public https address for the gateway and print it."""
+    import re
+    binary, log = Path("/content/cloudflared"), Path("/content/tunnel.log")
+    if not binary.exists():
+        subprocess.run(["wget", "-q", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "-O", str(binary)], check=True)
+        binary.chmod(0o755)
+    running = subprocess.run(["pgrep", "-x", "cloudflared"], capture_output=True).returncode == 0
+    if not running:
+        subprocess.Popen([str(binary), "tunnel", "--url", GATEWAY, "--no-autoupdate"], stdout=open(log, "w"), stderr=subprocess.STDOUT,
+                         start_new_session=True)
+    for _ in range(40):
+        time.sleep(1.5)
+        found = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", log.read_text()) if log.exists() else None
+        if found:
+            print("\nGATEWAY URL:", found.group(0), "\nPaste it into the UI: Settings -> ML Gateway -> Save & Connect.")
+            return
+    print("The tunnel did not come up. See", log)
+
+
+def up() -> None:
+    """Everything in one go: restart the backend, then open the tunnel."""
+    restart()
+    tunnel()
+
+
 if __name__ == "__main__":
     command = sys.argv[1] if len(sys.argv) > 1 else "status"
-    {"restart": restart, "status": status, "stop": stop, "selftest": selftest}.get(command, status)()
+    {"restart": restart, "status": status, "stop": stop, "selftest": selftest, "tunnel": tunnel, "up": up}.get(command, status)()
