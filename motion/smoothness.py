@@ -13,6 +13,7 @@ from scipy.signal import savgol_filter
 from common.schema import Finding
 
 FPS = 25
+MIN_RUN_FRAMES = 3
 SAVGOL_WINDOW = 7
 SAVGOL_ORDER = 2
 JERK_MAD_THRESHOLD = 4.0
@@ -80,19 +81,25 @@ def compute_jerk(
 
     threshold = median_jerk + JERK_MAD_THRESHOLD * mad
 
+    # A threshold relative to the clip's own distribution is exceeded by some frame in almost
+    # any video, so single frames are not reported. Only a run of consecutive frames well above
+    # it is, which natural head motion rarely produces.
     findings = []
-    for i in range(n):
-        if i in scene_cuts:
+    run: list[int] = []
+    for i in range(n + 1):
+        above = i < n and i not in scene_cuts and valid_frames[i] and all_jerks[i] > threshold
+        if above:
+            run.append(i)
             continue
-        if not valid_frames[i]:
-            continue
-        if all_jerks[i] > threshold:
+        if len(run) >= MIN_RUN_FRAMES:
+            peak = float(max(all_jerks[j] for j in run))
             findings.append(Finding(
-                model="motion_smoothness",
-                score=min(float(all_jerks[i] / (threshold * 2)), 1.0),
-                start=i / FPS,
-                end=(i + 1) / FPS,
-                note=f"jerk_spike={all_jerks[i]:.4f}",
+                model="smoothness",
+                score=min(peak / (threshold * 4), 1.0),
+                start=run[0] / FPS,
+                end=(run[-1] + 1) / FPS,
+                note=f"jerk_run: {len(run)} consecutive frames, peak {peak / threshold:.1f}x the clip's threshold",
             ))
+        run = []
 
     return findings

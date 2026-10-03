@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 import tempfile
 import time
 from collections import deque
@@ -27,6 +26,7 @@ import numpy as np
 import torch
 
 from common.face import detect_faces_yunet
+from common.repo_import import repo_modules
 from common.schema import Finding, ModuleResult
 from common.utils import file_sha256, weights_sha256
 
@@ -36,6 +36,7 @@ MODEL = None
 DEVICE = None
 LANDMARKER = None
 MEAN_FACE = None
+PREPROCESS = None  # (apply_transform, cut_patch, warp_img) from the repository
 
 FPS = 25
 CLIP_LENGTH = 25
@@ -71,8 +72,11 @@ def load_model():
 
     import face_alignment
 
-    sys.path.insert(0, str(REPO_PATH.resolve()))
-    from models.spatiotemporal_net import Lipreading
+    global PREPROCESS
+    with repo_modules(REPO_PATH, "models", "preprocessing"):
+        from models.spatiotemporal_net import Lipreading
+        from preprocessing.utils import apply_transform, cut_patch, warp_img
+    PREPROCESS = (apply_transform, cut_patch, warp_img)
 
     # Built here rather than through the repo's get_model(), which assumes its own working
     # directory and a CUDA device.
@@ -114,8 +118,7 @@ class _RunCropper:
     """
 
     def __init__(self):
-        from preprocessing.utils import apply_transform, cut_patch, warp_img
-        self._apply, self._cut, self._warp = apply_transform, cut_patch, warp_img
+        self._apply, self._cut, self._warp = PREPROCESS
         self.frames: deque = deque()
         self.landmarks: deque = deque()
         self.trans = None

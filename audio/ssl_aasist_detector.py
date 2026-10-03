@@ -54,6 +54,7 @@ import soundfile as sf
 import torch
 
 from common.schema import Finding, ModuleResult
+from common.repo_import import repo_modules
 from common.utils import file_sha256, weights_sha256
 
 XLSR_PATH = Path("weights/xlsr2_300m.pt")
@@ -100,17 +101,10 @@ def load_model():
     if not link.exists():
         link.symlink_to(XLSR_PATH.resolve())
 
-    sys.path.insert(0, str(REPO_PATH))
-    from model import Model
-
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-    # The Model class expects an args object with a few attributes
-    class Args:
-        pass
-    args = Args()
-
-    model = Model(args, DEVICE)
+    with repo_modules(REPO_PATH, "model"):
+        from model import Model
+        model = Model(None, DEVICE)  # the constructor ignores its args object
     model = model.to(DEVICE)
 
     # Load pretrained weights

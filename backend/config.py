@@ -63,7 +63,7 @@ DEFAULTS = {
         "signal_floor": 0.3,
         # Rule-based modules contribute to the average but cannot trigger the strong-signal cap.
         "heuristic_modules": ["motion", "metadata"],
-        "heuristic_score_cap": 0.7,
+        "heuristic_score_cap": 0.4,
     },
     "labels": {"low_risk": [70, 100], "review": [40, 69], "high_manipulation": [0, 39]},
     "weights_sha256": {},

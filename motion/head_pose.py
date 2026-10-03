@@ -43,10 +43,12 @@ def estimate_pose(landmarks_2d: np.ndarray, indices: list[int],
     if len(pts_2d) != len(model_3d):
         return None
 
-    success, rvec, tvec = cv2.solvePnP(
-        model_3d, pts_2d, camera_matrix, np.zeros(4),
-        flags=cv2.SOLVEPNP_ITERATIVE,
-    )
+    # The iterative solver needs six points to start from scratch; EPnP works from four.
+    flags = cv2.SOLVEPNP_ITERATIVE if len(pts_2d) >= 6 else cv2.SOLVEPNP_EPNP
+    try:
+        success, rvec, tvec = cv2.solvePnP(model_3d, pts_2d, camera_matrix, np.zeros(4), flags=flags)
+    except cv2.error:
+        return None
 
     if not success:
         return None

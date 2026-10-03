@@ -15,7 +15,6 @@ Follows the official inference script (repos/trufor/test_docker/src/trufor_test.
 
 from __future__ import annotations
 
-import sys
 import time
 from pathlib import Path
 
@@ -24,6 +23,7 @@ import numpy as np
 import torch
 
 from common.heat import save_heat
+from common.repo_import import repo_modules
 from common.schema import Finding, ModuleResult
 from common.utils import file_sha256, weights_sha256
 
@@ -50,16 +50,15 @@ def load_model():
             "git clone https://github.com/grip-unina/TruFor.git repos/trufor"
         )
 
-    sys.path.insert(0, str(SRC_PATH.resolve()))
-    from config import _C
-    from models.cmx.builder_np_conf import myEncoderDecoder
-
-    cfg = _C.clone()
-    cfg.merge_from_file(str(SRC_PATH / "trufor.yaml"))
-    cfg.freeze()
-
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = myEncoderDecoder(cfg=cfg)
+    with repo_modules(SRC_PATH, "config", "models", "data_core"):
+        from config import _C
+        from models.cmx.builder_np_conf import myEncoderDecoder
+
+        cfg = _C.clone()
+        cfg.merge_from_file(str(SRC_PATH / "trufor.yaml"))
+        cfg.freeze()
+        model = myEncoderDecoder(cfg=cfg)
     checkpoint = torch.load(str(WEIGHTS_PATH), map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["state_dict"])
     MODEL = model.eval().to(DEVICE)
