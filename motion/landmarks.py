@@ -6,6 +6,9 @@ All distances normalized by inter-ocular distance (points 33 and 263).
 
 from __future__ import annotations
 
+import urllib.request
+from pathlib import Path
+
 import cv2
 import numpy as np
 
@@ -33,34 +36,65 @@ FACE_3D_MODEL = np.array([
 ], dtype=np.float64)
 
 
+TASK_MODEL = Path("weights/face_landmarker.task")
+TASK_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+
+
 def get_face_mesh():
+    """Returns ("legacy", FaceMesh) or ("tasks", FaceLandmarker). Both give the same 478 points.
+
+    Newer MediaPipe releases dropped `mp.solutions`; the Tasks API replaces it and needs a
+    model file, downloaded on first use.
+    """
     global MP_FACE_MESH
     if MP_FACE_MESH is not None:
         return MP_FACE_MESH
 
     import mediapipe as mp
-    MP_FACE_MESH = mp.solutions.face_mesh.FaceMesh(
-        static_image_mode=False,
-        max_num_faces=1,
-        refine_landmarks=True,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
+    if hasattr(mp, "solutions"):
+        MP_FACE_MESH = ("legacy", mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        ))
+        return MP_FACE_MESH
+
+    from mediapipe.tasks import python as mp_python
+    from mediapipe.tasks.python import vision
+
+    if not TASK_MODEL.exists():
+        TASK_MODEL.parent.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(TASK_MODEL_URL, TASK_MODEL)
+    options = vision.FaceLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=str(TASK_MODEL)),
+        running_mode=vision.RunningMode.IMAGE,
+        num_faces=1,
+        min_face_detection_confidence=0.5,
     )
+    MP_FACE_MESH = ("tasks", vision.FaceLandmarker.create_from_options(options))
     return MP_FACE_MESH
 
 
 def get_landmarks(frame_rgb: np.ndarray) -> np.ndarray | None:
-    """Return (478, 2) array of normalized landmark coordinates, or None."""
-    mesh = get_face_mesh()
-    result = mesh.process(frame_rgb)
-
-    if not result.multi_face_landmarks:
-        return None
-
-    face = result.multi_face_landmarks[0]
+    """Return a (478, 2) array of landmark pixel coordinates, or None when no face is found."""
+    kind, mesh = get_face_mesh()
     h, w = frame_rgb.shape[:2]
-    pts = np.array([(lm.x * w, lm.y * h) for lm in face.landmark])
-    return pts
+
+    if kind == "legacy":
+        result = mesh.process(frame_rgb)
+        if not result.multi_face_landmarks:
+            return None
+        points = result.multi_face_landmarks[0].landmark
+    else:
+        import mediapipe as mp
+        result = mesh.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(frame_rgb)))
+        if not result.face_landmarks:
+            return None
+        points = result.face_landmarks[0]
+
+    return np.array([(lm.x * w, lm.y * h) for lm in points])
 
 
 def inter_ocular_distance(landmarks: np.ndarray) -> float:

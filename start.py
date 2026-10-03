@@ -92,6 +92,7 @@ def main() -> None:
             children[module] = subprocess.Popen(
                 [python, "-m", "uvicorn", f"{module}.app:app", "--host", "127.0.0.1", "--port", str(port)],
                 cwd=ROOT, stdout=open(logs / f"{module}.log", "w"), stderr=subprocess.STDOUT,
+                env={**os.environ, "MPLBACKEND": "Agg"},  # a notebook's inline backend does not exist in a service
             )
 
         # Model imports can take a while. Report what is known after a short wait and carry on.

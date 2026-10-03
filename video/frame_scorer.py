@@ -8,6 +8,9 @@ Clip-level score = 90th percentile of smoothed scores.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -18,6 +21,7 @@ from common.schema import Finding, ModuleResult
 from common.utils import file_sha256
 
 SAMPLE_FPS = 3
+MAX_SECONDS = 60
 SMOOTH_WINDOW = 5
 THRESHOLD_HIGH = 0.6
 THRESHOLD_LOW = 0.4
@@ -79,12 +83,16 @@ def analyze(file_path: Path, frames_dir: Path | None = None) -> ModuleResult:
     t0 = time.time()
     sha = file_sha256(file_path)
 
+    work = None
     if frames_dir is None:
-        from common.preprocess import preprocess_media
-        import tempfile
+        # Only the sampled frames are needed here, not the full shared preprocessing.
         work = Path(tempfile.mkdtemp(prefix="tf_video_"))
-        result = preprocess_media(file_path, work)
-        frames_dir = result["frames_dir"]
+        frames_dir = work
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(file_path), "-t", str(MAX_SECONDS),
+             "-vf", f"fps={SAMPLE_FPS}", "-q:v", "2", str(work / "%05d.jpg")],
+            capture_output=True, timeout=300,
+        )
 
     frame_files = sorted(frames_dir.glob("*.jpg"))
     if not frame_files:
@@ -110,6 +118,9 @@ def analyze(file_path: Path, frames_dir: Path | None = None) -> ModuleResult:
 
         timestamps.append(ts)
         raw_scores.append(max_score)
+
+    if work is not None:
+        shutil.rmtree(work, ignore_errors=True)
 
     if not timestamps:
         return ModuleResult(module="video", file_sha256=sha, findings=[], runtime_s=time.time() - t0)

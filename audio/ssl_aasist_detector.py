@@ -39,9 +39,15 @@ Architecture:
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+# Services run headless; an inherited notebook backend (MPLBACKEND) would break matplotlib.
+os.environ["MPLBACKEND"] = "Agg"
 
 import numpy as np
 import soundfile as sf
@@ -57,6 +63,7 @@ MODEL = None
 DEVICE = None
 
 SAMPLE_RATE = 16000
+MAX_SECONDS = 300
 WINDOW_SAMPLES = 64600  # ~4.04s, matches repo's cut length
 STRIDE_SAMPLES = SAMPLE_RATE * 2  # 2s stride (50% overlap)
 MIN_SPEECH_RATIO = 0.5
@@ -148,21 +155,17 @@ def analyze(file_path: Path, audio_path: Path | None = None) -> ModuleResult:
     # Load audio
     target = audio_path or file_path
     try:
-        audio, sr = sf.read(str(target))
-        audio = audio.astype(np.float32)
-        if len(audio.shape) > 1:
-            audio = audio.mean(axis=1)  # stereo → mono
-        if sr != SAMPLE_RATE:
-            import subprocess, tempfile
-            tmp_wav = Path(tempfile.mktemp(suffix=".wav"))
+        # Decode through ffmpeg: handles video containers and compressed audio, and resamples.
+        with tempfile.TemporaryDirectory(prefix="aasist_") as tmp:
+            wav = Path(tmp) / "audio16k.wav"
             subprocess.run(
-                ["ffmpeg", "-i", str(target), "-ar", str(SAMPLE_RATE),
-                 "-ac", "1", "-f", "wav", str(tmp_wav), "-y", "-loglevel", "error"],
-                check=True,
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(target), "-vn", "-t", str(MAX_SECONDS),
+                 "-ar", str(SAMPLE_RATE), "-ac", "1", "-sample_fmt", "s16", str(wav)],
+                check=True, capture_output=True, timeout=300,
             )
-            audio, sr = sf.read(str(tmp_wav))
-            audio = audio.astype(np.float32)
-            tmp_wav.unlink(missing_ok=True)
+            audio, sr = sf.read(str(wav), dtype="float32")
+        if len(audio) < SAMPLE_RATE // 2:
+            raise ValueError("less than half a second of audio")
     except Exception as e:
         return ModuleResult(
             module="audio", file_sha256=sha,

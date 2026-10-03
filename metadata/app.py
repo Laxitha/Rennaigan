@@ -96,7 +96,8 @@ def run_ffprobe(file_path: Path) -> tuple[dict | None, list[Finding]]:
         ))
 
     nb_streams = int(fmt.get("nb_streams", 0))
-    if nb_streams > 0 and not audio_streams and video_streams:
+    is_still = "image2" in fmt.get("format_name", "") or fmt.get("format_name", "").endswith("_pipe")
+    if nb_streams > 0 and not audio_streams and video_streams and not is_still:
         findings.append(Finding(
             model="ffprobe",
             score=0.3,

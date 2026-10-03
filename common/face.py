@@ -5,6 +5,7 @@ Provides detection boxes, 5-point landmarks, and 512-d ArcFace embeddings.
 
 from __future__ import annotations
 
+import urllib.request
 from pathlib import Path
 
 import cv2
@@ -29,8 +30,47 @@ def get_face_app():
     return FACE_APP
 
 
+YUNET_PATH = Path("weights/face_detection_yunet_2023mar.onnx")
+YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
+YUNET = None
+
+
+def detect_faces_yunet(image: np.ndarray, det_thresh: float = 0.6) -> list[dict]:
+    """OpenCV YuNet face boxes. No identity embedding."""
+    global YUNET
+    if YUNET is None:
+        if not YUNET_PATH.exists():
+            YUNET_PATH.parent.mkdir(parents=True, exist_ok=True)
+            urllib.request.urlretrieve(YUNET_URL, YUNET_PATH)
+        YUNET = cv2.FaceDetectorYN.create(str(YUNET_PATH), "", (320, 320), det_thresh, 0.3, 50)
+    h, w = image.shape[:2]
+    YUNET.setInputSize((w, h))
+    _, found = YUNET.detect(image)
+    results = []
+    for row in found if found is not None else []:
+        x, y, bw, bh = (int(v) for v in row[:4])
+        if min(bw, bh) < MIN_FACE_PX:
+            continue
+        results.append({
+            "box": [max(x, 0), max(y, 0), bw, bh],
+            "score": float(row[14]),
+            "landmarks": row[4:14].reshape(5, 2).tolist(),
+            "embedding": None,
+        })
+    return results
+
+
 def detect_faces(image: np.ndarray, det_thresh: float = DET_THRESH) -> list[dict]:
-    """Detect faces with InsightFace. Returns list of dicts with box, landmarks, embedding."""
+    """Detect faces. Returns list of dicts with box, landmarks, embedding.
+
+    InsightFace is used first because it also gives identity embeddings. When it finds
+    nothing, YuNet is tried, so one detector missing a face does not hide it from SBI.
+    """
+    results = _detect_faces_insightface(image, det_thresh)
+    return results if results else detect_faces_yunet(image)
+
+
+def _detect_faces_insightface(image: np.ndarray, det_thresh: float) -> list[dict]:
     app = get_face_app()
     faces = app.get(image)
 

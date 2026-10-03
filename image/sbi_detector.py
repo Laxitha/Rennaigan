@@ -117,6 +117,10 @@ def analyze(file_path: Path) -> ModuleResult:
 
     findings = analyze_image(img, file_path)
 
+    if not findings:
+        return ModuleResult(module="image", file_sha256=sha, runtime_s=time.time() - t0,
+                            findings=[Finding(model="sbi", score=0.0, note="no_face_detected: nothing for the face-swap detector to examine")])
+
     artifacts = {}
     if findings:
         top = max(findings, key=lambda f: f.score)
@@ -127,6 +131,6 @@ def analyze(file_path: Path) -> ModuleResult:
         file_sha256=sha,
         findings=findings,
         artifacts=artifacts,
-        weights_sha256={"sbi": weights_sha256(WEIGHTS_PATH)} if findings else {},
+        weights_sha256={"sbi": weights_sha256(WEIGHTS_PATH)},
         runtime_s=time.time() - t0,
     )
