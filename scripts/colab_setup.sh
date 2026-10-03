@@ -29,13 +29,15 @@ clone syncnet https://github.com/joonson/syncnet_python.git
 ls repos
 
 step "Python packages (image, video, motion, metadata services)"
+# pip prints dependency-resolver notes about packages Colab preinstalls and this project does not
+# use; they are not failures, so only the import check below is shown.
 pip install -q fastapi uvicorn python-multipart httpx pyyaml gdown yacs timm anthropic transformers \
-    efficientnet_pytorch face_alignment scikit-image python_speech_features "scenedetect[opencv]" 2>&1 | tail -2
-python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" \
-    && pip install -q onnxruntime-gpu 2>&1 | tail -1 || pip install -q onnxruntime 2>&1 | tail -1
-pip install -q insightface 2>&1 | tail -2
-pip install -q mediapipe 2>&1 | tail -2
-python - <<'PY'
+    efficientnet_pytorch face_alignment scikit-image python_speech_features "scenedetect[opencv]" >/dev/null 2>&1
+python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null \
+    && pip install -q onnxruntime-gpu >/dev/null 2>&1 || pip install -q onnxruntime >/dev/null 2>&1
+pip install -q insightface >/dev/null 2>&1
+pip install -q mediapipe >/dev/null 2>&1
+TF_CPP_MIN_LOG_LEVEL=3 python -W ignore - 2>/dev/null <<'PY'
 import importlib
 for mod in ["efficientnet_pytorch", "transformers", "insightface", "face_alignment", "mediapipe", "scenedetect", "yacs", "anthropic"]:
     try:
