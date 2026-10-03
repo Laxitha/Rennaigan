@@ -26,7 +26,7 @@ thresholds:
   lipforensics: 0.5
   syncnet_confidence: 3.0
   syncnet_offset_frames: 3
-  ssl_aasist: 0.5
+  voice: 0.5
   ecapa_similarity: 0.25
   identity_drift: 0.35
   head_pose_deg: 10.0
@@ -75,8 +75,6 @@ weights_sha256:
   trufor: "REPLACE_AFTER_DOWNLOAD"
   lipforensics: "REPLACE_AFTER_DOWNLOAD"
   syncnet: "REPLACE_AFTER_DOWNLOAD"
-  ssl_aasist: "REPLACE_AFTER_DOWNLOAD"
-  xlsr_300m: "REPLACE_AFTER_DOWNLOAD"
 
 # ---------------------------------------------------------------------------
 # Gateway (backend/gateway.py) — the single API the UI talks to.

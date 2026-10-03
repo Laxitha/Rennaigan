@@ -15,7 +15,7 @@ MODULES = ["image", "video", "audio", "metadata", "motion"]
 MODULE_DETECTORS = {
     "image": ["sbi", "aigen", "trufor"],
     "video": ["sbi_video", "aigen_video", "lipforensics", "syncnet"],
-    "audio": ["ssl_aasist"],  # ecapa (speaker verification) only runs in identity mode with a reference
+    "audio": ["voice"],  # ecapa (speaker verification) only runs in identity mode with a reference
     "metadata": ["exiftool", "ffprobe", "c2patool"],
     "motion": ["optical_flow", "head_pose", "smoothness", "identity_drift", "blink"],
 }

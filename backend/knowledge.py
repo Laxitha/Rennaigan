@@ -57,12 +57,14 @@ DETECTORS = {
         "screen, music), so on its own it is weak evidence and is kept below the strong-signal level. High "
         "confidence with near-zero offset supports genuine, undubbed speech."
     ),
-    "ssl_aasist": (
-        "SSL-AASIST: wav2vec 2.0 XLS-R features with an AASIST graph-attention back end, trained on ASVspoof. "
-        "Scores 4-second windows; score is P(synthetic or converted speech). Windows without speech are skipped. "
-        "Telephone-band audio, heavy noise suppression, music beds and strong codecs can raise scores on genuine "
-        "speech; modern voice clones unseen in training can score low. Consistently high windows are strong "
-        "evidence; one high window among many low ones is weak."
+    "voice": (
+        "Synthetic-voice detector: a wav2vec 2.0 XLS-R classifier scoring 5-second windows; score is "
+        "P(synthetic or cloned speech), shifted so the measured decision point sits at 0.5. The file-level "
+        "score is the median over windows; interval findings mark runs of consecutive high windows. On 16 "
+        "human and 15 synthetic test recordings it separated them with AUC 0.95, with one genuine recording "
+        "above 0.5. That is a small test. Music, singing, heavy noise suppression and very old or "
+        "low-bitrate recordings are outside what it was tested on; modern voice clones it has not seen can "
+        "score low. Consistently high windows are strong evidence; one high window among many low is weak."
     ),
     "ecapa": (
         "ECAPA-TDNN speaker verification. Only used in identity mode with a reference recording: compares the "

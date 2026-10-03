@@ -1,4 +1,4 @@
-"""Audio forensics module — runs SSL-AASIST and ECAPA."""
+"""Audio forensics module: synthetic-voice detection, and speaker verification in identity mode."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from common.schema import Finding, ModuleResult
 from common.service import create_app
 from common.utils import file_sha256
 
-from . import ssl_aasist_detector, ecapa_detector
+from . import ecapa_detector, voice_detector
 
 
 def analyze(file_path: Path) -> ModuleResult:
@@ -20,7 +20,7 @@ def analyze(file_path: Path) -> ModuleResult:
     all_artifacts = {}
     all_weights = {}
 
-    for detector in [ssl_aasist_detector, ecapa_detector]:
+    for detector in [voice_detector, ecapa_detector]:
         try:
             result = detector.analyze(file_path)
             all_findings.extend(result.findings)
@@ -47,8 +47,8 @@ def analyze(file_path: Path) -> ModuleResult:
 
 def warmup() -> None:
     try:
-        ssl_aasist_detector.load_model()
-    except BaseException:
+        voice_detector.load_model()
+    except Exception:
         pass  # reported at analysis time
 
 

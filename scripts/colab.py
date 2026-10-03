@@ -23,7 +23,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GATEWAY = "http://127.0.0.1:8010"
 LOG = Path("/content/backend.log") if Path("/content").is_dir() else ROOT / "data" / "backend.log"
-AUDIO_PYTHON = Path("/content/audio-env/bin/python")
 MODULES = ["image", "video", "audio", "metadata", "motion"]
 
 
@@ -66,8 +65,6 @@ def status() -> bool:
 def restart() -> None:
     stop()
     env = dict(os.environ, PYTHONUNBUFFERED="1")
-    if AUDIO_PYTHON.exists():
-        env["RENNAIGAN_PYTHON_AUDIO"] = str(AUDIO_PYTHON)
     print("Claude assessment key:", "present" if env.get("ANTHROPIC_API_KEY") else "not set (rule-based verdict only)")
     LOG.parent.mkdir(parents=True, exist_ok=True)
     # start_new_session: the backend must outlive the notebook cell that launched it

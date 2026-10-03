@@ -8,7 +8,7 @@ Each module is an independent FastAPI microservice:
 |--------|------|----------|--------|
 | Image | 8001 | POST /analyze | SBI (face swap), AI-generated detection (two Hugging Face classifiers), TruFor (splicing) |
 | Video | 8002 | POST /analyze | SBI frame scoring, LipForensics, SyncNet |
-| Audio | 8003 | POST /analyze | SSL-AASIST (voice deepfake), ECAPA-TDNN (speaker verify) |
+| Audio | 8003 | POST /analyze | synthetic-voice classifier (Hugging Face), ECAPA-TDNN (speaker verify) |
 | Metadata | 8004 | POST /analyze | Rule-based (exiftool, ffprobe, c2patool) |
 | Motion | 8005 | POST /analyze | RAFT optical flow, head pose, smoothness, identity drift, blink |
 

@@ -21,9 +21,7 @@ onnxruntime
 face_alignment
 
 # Audio module
-soundfile
-librosa
-speechbrain
+speechbrain  # identity mode only
 
 # Motion module
 mediapipe
