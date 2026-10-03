@@ -51,7 +51,8 @@ def load_model():
         )
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    with repo_modules(SRC_PATH, "config", "models", "data_core"):
+    # keep=True: TruFor imports models.cmx.layer_utils inside its forward pass.
+    with repo_modules(SRC_PATH, "config", "models", "data_core", keep=True):
         from config import _C
         from models.cmx.builder_np_conf import myEncoderDecoder
 

@@ -19,7 +19,10 @@ _lock = threading.RLock()
 
 
 @contextmanager
-def repo_modules(path: Path, *names: str):
+def repo_modules(path: Path, *names: str, keep: bool = False):
+    """`keep=True` leaves this repository's modules registered afterwards. A repository that
+    imports its own modules lazily (inside a forward pass) needs that; only one such
+    repository can be loaded per process."""
     def owned(key: str) -> bool:
         return any(key == n or key.startswith(n + ".") for n in names)
 
@@ -30,6 +33,7 @@ def repo_modules(path: Path, *names: str):
             yield
         finally:
             sys.path.remove(str(Path(path).resolve()))
-            for k in [k for k in sys.modules if owned(k)]:
-                del sys.modules[k]
-            sys.modules.update(saved)
+            if not keep:
+                for k in [k for k in sys.modules if owned(k)]:
+                    del sys.modules[k]
+                sys.modules.update(saved)
