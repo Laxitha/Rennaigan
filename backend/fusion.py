@@ -141,7 +141,12 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
     if capped:
         reasons.append(f"One module is above {fusion_cfg['strong_signal_cap']}, so the trust score is capped at {fusion_cfg['strong_signal_max_trust']}.")
 
-    if evidence_weight < fusion_cfg["inconclusive_coverage_threshold"]:
+    primary = applicable[0] if applicable else None
+    if primary in ("image", "video", "audio") and coverage.get(primary, 0) <= 0:
+        # Seen live: the video module timed out and the file was called real on voice and motion alone.
+        label = "Inconclusive"
+        reasons.append(f"The {primary} detectors, which carry the verdict for this kind of file, produced no evidence.")
+    elif evidence_weight < fusion_cfg["inconclusive_coverage_threshold"]:
         label = "Inconclusive"
         reasons.append(f"Only {evidence_weight:.0%} of the applicable detector weight produced evidence"
                        f" (incomplete: {', '.join(missing)}), which is too little for a verdict.")

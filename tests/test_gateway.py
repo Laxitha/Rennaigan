@@ -243,8 +243,16 @@ def test_rag_retrieves_case_findings(client, samples):
 def test_fusion_rule_based_modules_cannot_cap_trust(cfg):
     runs = {"video": run_of("ok", 1.0), "motion": run_of("ok", 1.0, ("smoothness", 1.0)), "metadata": run_of("ok", 1.0)}
     out = fuse(runs, ["video", "motion", "metadata"], "public", cfg)
-    assert out["module_scores"]["motion"] == pytest.approx(0.4)
+    assert out["module_scores"]["motion"] == pytest.approx(0.2)  # one motion check alone
     assert out["trust_score"] > 30
+    runs["motion"] = run_of("ok", 1.0, ("smoothness", 1.0), ("head_pose", 0.9))
+    assert fuse(runs, ["video", "motion", "metadata"], "public", cfg)["module_scores"]["motion"] == pytest.approx(0.4)  # two agree: module cap
+
+
+def test_fusion_needs_the_primary_module(cfg):
+    runs = {"video": run_of("error", 0.0), "audio": run_of("ok", 1.0, ("voice", 0.05)), "motion": run_of("ok", 1.0), "metadata": run_of("ok", 1.0)}
+    out = fuse(runs, ["video", "audio", "motion", "metadata"], "public", cfg)
+    assert out["label"] == "Inconclusive" and "video detectors" in out["label_reason"]
 
 
 def test_fusion_detector_with_nothing_to_examine_is_not_clean_evidence(cfg):

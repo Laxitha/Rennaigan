@@ -21,6 +21,7 @@ from pathlib import Path
 
 import cv2
 
+from common import budget
 from common.face import detect_faces, get_largest_face
 from common.sampling import build_sample, coverage_note, plan, probe_duration, window_bounds
 from common.schema import Finding, ModuleResult
@@ -42,7 +43,8 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
     t0 = time.time()
     sha = file_sha256(file_path)
     duration = probe_duration(file_path)
-    windows = plan(duration)
+    plan_ = budget.get()
+    windows = plan(duration, plan_["window_s"], plan_["max_windows"])
     timings: dict[str, float] = {}
 
     work = Path(tempfile.mkdtemp(prefix="rg_motion_"))
@@ -67,7 +69,7 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
                 box = face["box"] if face else None
                 embeddings.append((index, face.get("embedding") if face else None))
             # the frame after a flow sample completes the pair
-            if index % FLOW_EVERY == 1 and previous is not None and box is not None:
+            if plan_["optical_flow"] and index % FLOW_EVERY == 1 and previous is not None and box is not None:
                 flow_pairs.append((index - 1, previous, frame, box))
             previous = frame if index % FLOW_EVERY == 0 else None
             index += 1
@@ -112,7 +114,8 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
             continue
         part = landmarks[first:last]
         # Check times are relative to the window; the offset places them in the source video.
-        check("optical_flow", source_start, lambda: flow_findings(first, last))
+        if plan_["optical_flow"]:
+            check("optical_flow", source_start, lambda: flow_findings(first, last))
         check("head_pose", source_start, lambda: analyze_head_pose(part, frame_shape))
         check("smoothness", source_start, lambda: compute_jerk(part))
         check("identity_drift", source_start,
@@ -127,7 +130,7 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
         findings=findings,
         runtime_s=time.time() - t0,
         timings=timings,
-        note=coverage_note(duration, windows),
+        note=" ".join(n for n in (coverage_note(duration, windows), budget.REDUCED_NOTE if plan_["reduced"] else "") if n),
     )
 
 

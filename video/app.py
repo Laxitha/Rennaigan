@@ -13,6 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from common import budget
 from common.sampling import build_sample, coverage_note, extract_frames, plan, probe_duration, to_source_time, window_bounds
 from common.schema import Finding, ModuleResult
 from common.service import create_app
@@ -25,7 +26,8 @@ def analyze(file_path: Path) -> ModuleResult:
     t0 = time.time()
     sha = file_sha256(file_path)
     duration = probe_duration(file_path)
-    windows = plan(duration)
+    plan_ = budget.get()
+    windows = plan(duration, plan_["window_s"], plan_["max_windows"])
 
     work = Path(tempfile.mkdtemp(prefix="rg_video_"))
     try:
@@ -33,7 +35,7 @@ def analyze(file_path: Path) -> ModuleResult:
         frames_dir.mkdir()
         sample = work / "sample25.mp4"
         with ThreadPoolExecutor(2) as pool:
-            frames_job = pool.submit(extract_frames, file_path, frames_dir, duration)
+            frames_job = pool.submit(extract_frames, file_path, frames_dir, duration, max_frames=plan_["max_frames"])
             sample_job = pool.submit(build_sample, file_path, sample, windows)
             timestamps = frames_job.result()
             try:
@@ -45,10 +47,12 @@ def analyze(file_path: Path) -> ModuleResult:
 
         jobs = {
             "sbi_video": lambda: frame_scorer.analyze(file_path, frames_dir, timestamps),
-            "aigen_video": lambda: aigen_frames.analyze(file_path, frames_dir, timestamps),
+            "aigen_video": lambda: aigen_frames.analyze(file_path, frames_dir, timestamps, plan_["aigen_frames"]),
             "lipforensics": lambda: lipforensics_detector.analyze(file_path, sample, breaks),
             "syncnet": lambda: syncnet_detector.analyze(file_path, sample),
         }
+        if not plan_["lip_sync"]:
+            del jobs["syncnet"]
 
         def run(name: str):
             started = time.time()
@@ -84,7 +88,7 @@ def analyze(file_path: Path) -> ModuleResult:
         weights_sha256=weights,
         runtime_s=time.time() - t0,
         timings=timings,
-        note=coverage_note(duration, windows),
+        note=" ".join(n for n in (coverage_note(duration, windows), budget.REDUCED_NOTE if plan_["reduced"] else "") if n),
     )
 
 
