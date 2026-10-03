@@ -19,3 +19,10 @@ repos/
 # IDE
 .vscode/
 .idea/
+
+# Gateway runtime data (cases, media, ledger key)
+data/
+
+# Frontend
+node_modules/
+.DS_Store

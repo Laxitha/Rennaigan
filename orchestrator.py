@@ -23,39 +23,66 @@ import httpx
 from common.schema import ModuleResult
 from common.fusion import fuse_results, load_config
 
+import os
+import importlib
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("orchestrator")
+
 MODULES = {
-    "image": "http://localhost:8001",
-    "video": "http://localhost:8002",
-    "audio": "http://localhost:8003",
-    "metadata": "http://localhost:8004",
-    "motion": "http://localhost:8005",
+    "image": os.environ.get("IMAGE_URL", "http://localhost:8001"),
+    "video": os.environ.get("VIDEO_URL", "http://localhost:8002"),
+    "audio": os.environ.get("AUDIO_URL", "http://localhost:8003"),
+    "metadata": os.environ.get("METADATA_URL", "http://localhost:8004"),
+    "motion": os.environ.get("MOTION_URL", "http://localhost:8005"),
 }
 
 
 async def check_health(client: httpx.AsyncClient, url: str) -> bool:
     try:
-        resp = await client.get(f"{url}/health", timeout=5)
+        resp = await client.get(f"{url}/health", timeout=3)
         return resp.status_code == 200
     except Exception:
         return False
 
 
+def run_module_in_process(module: str, file_path: Path) -> ModuleResult | None:
+    """Fallback: run detector module directly in-process if HTTP service is offline."""
+    try:
+        logger.info(f"🔄 Running module '{module}' in-process fallback for {file_path.name}...")
+        mod = importlib.import_module(f"{module}.app")
+        if hasattr(mod, "analyze"):
+            result = mod.analyze(file_path)
+            if hasattr(result, "__await__"):
+                return asyncio.run(result)
+            return result
+    except Exception as exc:
+        logger.error(f"❌ In-process execution for '{module}' failed: {exc}")
+    return None
+
+
 async def call_module(
     client: httpx.AsyncClient, module: str, url: str, file_path: Path
 ) -> ModuleResult | None:
-    if not await check_health(client, url):
-        return None
+    # Try HTTP microservice first
+    if await check_health(client, url):
+        try:
+            with open(file_path, "rb") as f:
+                resp = await client.post(
+                    f"{url}/analyze",
+                    files={"file": (file_path.name, f)},
+                    timeout=300,
+                )
+            if resp.status_code == 200:
+                logger.info(f"✅ Connected to HTTP backend '{module}' at {url}")
+                return ModuleResult(**resp.json())
+        except Exception as exc:
+            logger.warning(f"⚠️ HTTP call to '{module}' failed: {exc}")
 
-    with open(file_path, "rb") as f:
-        resp = await client.post(
-            f"{url}/analyze",
-            files={"file": (file_path.name, f)},
-            timeout=300,
-        )
-
-    if resp.status_code == 200:
-        return ModuleResult(**resp.json())
-    return None
+    # Fallback to direct in-process call if HTTP microservice is unreachable
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, run_module_in_process, module, file_path)
 
 
 async def analyze_media(

@@ -1,0 +1,37 @@
+# Core
+fastapi
+uvicorn
+python-multipart
+pydantic
+numpy
+Pillow
+opencv-python-headless
+matplotlib
+
+# Image module
+torch
+torchvision
+efficientnet_pytorch
+open_clip_torch
+grad-cam
+insightface
+onnxruntime
+
+# Video module
+face_alignment
+
+# Audio module
+soundfile
+librosa
+speechbrain
+
+# Motion module
+mediapipe
+scipy
+
+# Preprocessing / Metadata
+httpx
+pyyaml
+
+# Tests
+pytest

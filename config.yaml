@@ -58,6 +58,7 @@ fusion:
   strong_signal_cap: 0.9
   strong_signal_max_trust: 30
   inconclusive_coverage_threshold: 0.5
+  signal_floor: 0.3   # findings at or above this score are reported as signals
 
 labels:
   low_risk: [70, 100]
@@ -72,3 +73,24 @@ weights_sha256:
   syncnet: "REPLACE_AFTER_DOWNLOAD"
   ssl_aasist: "REPLACE_AFTER_DOWNLOAD"
   xlsr_300m: "REPLACE_AFTER_DOWNLOAD"
+
+# ---------------------------------------------------------------------------
+# Gateway (backend/gateway.py) — the single API the UI talks to.
+gateway:
+  host: 127.0.0.1
+  port: 8010
+  data_dir: data            # SQLite database, ledger key, stored media and artifacts
+  keep_media: true          # false deletes the upload after analysis; playback and frame dissection then stop working
+  max_concurrent_analyses: 2
+  module_timeout_s: 600
+  inprocess_fallback: true  # run a detector inside the gateway when its service is offline
+  max_bulk_files: 20
+  cors_origins: []          # extra browser origins, e.g. ["https://rennaigan.vercel.app"]; local addresses are always allowed
+
+# Detector services. Optional per-module interpreter: python: /opt/anaconda3/envs/tf-audio/bin/python
+services:
+  image:    {url: "http://127.0.0.1:8001"}
+  video:    {url: "http://127.0.0.1:8002"}
+  audio:    {url: "http://127.0.0.1:8003"}
+  metadata: {url: "http://127.0.0.1:8004"}
+  motion:   {url: "http://127.0.0.1:8005"}

@@ -40,11 +40,12 @@ def load_config(config_path: str = "config.yaml") -> dict:
 
 
 def calibrate_score(raw_score: float, temperature: float = 1.0) -> float:
-    """Apply temperature scaling to raw logit/score."""
+    """Temperature-scale a probability in logit space. T=1 leaves it unchanged."""
     if temperature <= 0:
         return raw_score
-    scaled = raw_score / temperature
-    return 1.0 / (1.0 + np.exp(-scaled))
+    p = min(max(float(raw_score), 1e-6), 1.0 - 1e-6)
+    logit = np.log(p / (1.0 - p))
+    return float(1.0 / (1.0 + np.exp(-logit / temperature)))
 
 
 def fuse_results(

@@ -16,6 +16,41 @@ All services expose:
 - `POST /analyze` — accepts multipart file upload, returns `ModuleResult` JSON
 - `GET /health` — returns `{"status": "ok"}`
 
+## Backend gateway (what the UI talks to)
+
+```bash
+pip install fastapi uvicorn python-multipart httpx pyyaml numpy Pillow opencv-python-headless
+python start.py                      # detectors on 8001-8005, gateway on http://127.0.0.1:8010
+cd frontend/rennaigan && npm install && npm run dev     # UI on http://localhost:5173
+```
+
+`start.py` starts every detector service it can and then the gateway. A detector whose
+dependencies or weights are missing is reported as unavailable and is left out of the trust
+score; it never counts as "clean". If a detector port is taken by another program, the
+service moves to a free port automatically. Needs `ffmpeg`, `ffprobe` and `exiftool` on PATH.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /analyze` (multipart `file`, `mode`) | Analyse one file, returns the sealed case |
+| `POST /bulk` (multipart `files`) | Analyse up to 20 files as one batch |
+| `GET /cases`, `GET /cases/{id}`, `DELETE /cases/{id}` | Case list, full case, delete |
+| `POST /cases/{id}/review` | Record an analyst decision |
+| `POST /cases/{id}/dissect`, `GET /cases/{id}/frames/zip` | Frame-by-frame extraction of a video |
+| `GET /cases/{id}/audit/verify`, `GET /audit/verify` | Recompute the audit hash chain (one case, whole ledger) |
+| `GET /media/{id}`, `GET /artifacts/{id}/{file}` | Original upload, heatmaps, spectrograms, frames |
+| `GET /health`, `GET /info` | Detector status, configuration |
+| `GET /rag/status`, `POST /rag/query` | Keyword retrieval over stored findings |
+
+Interactive API docs: http://127.0.0.1:8010/docs. Settings live in the `gateway:` and
+`services:` sections of `config.yaml`. Cases, uploads and the audit ledger are stored in
+`data/`; `data/ledger.key` signs the ledger and should be backed up and kept private.
+
+The gateway has no login. It listens on 127.0.0.1 only; put authentication in front of it
+before exposing it with `--host 0.0.0.0` or a tunnel. To allow a hosted UI, add its origin to
+`gateway.cors_origins`.
+
+Tests: `python -m pytest tests -q`
+
 ## Quick Start (Metadata only — no GPU needed)
 
 ```bash

@@ -101,14 +101,10 @@ def analyze(file_path: Path, frames_dir: Path | None = None) -> ModuleResult:
         if img is None:
             continue
 
-        try:
-            face_findings = analyze_image(img)
-            max_score = max((f.score for f in face_findings), default=0.0)
-        except (FileNotFoundError, ImportError):
-            max_score = 0.0
-            no_face_count += 1
-
-        if max_score == 0.0 and not face_findings:
+        # A missing weight file or dependency propagates: scoring it as 0 would read as "clean".
+        face_findings = analyze_image(img)
+        max_score = max((f.score for f in face_findings), default=0.0)
+        if not face_findings:
             no_face_count += 1
 
         timestamps.append(ts)
