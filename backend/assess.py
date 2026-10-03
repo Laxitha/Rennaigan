@@ -109,6 +109,10 @@ def fusion_verdict(fused: dict, cfg: dict) -> dict:
         return {"verdict": "uncertain", "confidence": 0, "source": "fusion", "headline": fused["label_reason"]}
     p_fake = 1.0 - trust / 100.0
     confidence = int(round(max(p_fake, 1.0 - p_fake) * evidence * 100))
+    if fused["label"] == "High manipulation indicators":
+        # A positive finding does not get weaker because other detectors were unavailable.
+        strongest = max((fused.get("module_scores") or {}).values(), default=p_fake)
+        confidence = int(round(min(strongest, 0.9) * 100 * (0.75 + 0.25 * evidence)))
     if fused["label"] == "Low risk":
         verdict, headline = "real", "No detector that ran found evidence of manipulation."
     elif fused["label"] == "High manipulation indicators":

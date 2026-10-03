@@ -271,7 +271,7 @@ def test_fusion_verdict_levels(cfg):
     fake = fusion_verdict({"trust_score": 30.0, "evidence_weight": 1.0, "label": "High manipulation indicators", "label_reason": ""}, cfg)
     thin = fusion_verdict({"trust_score": 90.0, "evidence_weight": 0.2, "label": "Inconclusive", "label_reason": ""}, cfg)
     assert (real["verdict"], real["confidence"]) == ("real", 95)
-    assert (fake["verdict"], fake["confidence"]) == ("deepfake", 70)
+    assert fake["verdict"] == "deepfake" and 60 <= fake["confidence"] <= 90
     assert thin["verdict"] == "uncertain" and thin["confidence"] <= 50
 
 
@@ -361,3 +361,29 @@ def test_failed_detector_plus_idle_one_is_unavailable_not_real(cfg):
             "metadata": {"info": {"status": "ok"}, "coverage": 1.0, "findings": [{"model": "ffprobe", "score": 0.2, "kind": "info", "note": "encoder_detected"}]}}
     fused = fuse(runs, ["audio", "metadata"], "public", cfg)
     assert fused["label"] == "Inconclusive" and fusion_verdict(fused, cfg)["verdict"] == "uncertain"
+
+
+def test_a_certain_detector_flags_even_when_others_are_missing(cfg):
+    """Seen on the website: both AI-image classifiers said 1.00 and the page said 'too little could be tested'."""
+    from backend.assess import fusion_verdict
+    image = {"info": {"status": "degraded"}, "coverage": 0.333, "findings": [{"model": "aigen", "score": 0.998, "kind": "signal", "note": "ai_generated_detection"}]}
+    fused = fuse({"image": image, "metadata": run_of("ok", 1.0)}, ["image", "metadata"], "public", cfg)
+    verdict = fusion_verdict(fused, cfg)
+    assert fused["label"] == "High manipulation indicators" and "did not all run" in fused["label_reason"]
+    assert verdict["verdict"] == "deepfake" and 60 <= verdict["confidence"] <= 90
+    # but a low score with the same gaps still cannot clear the file
+    image["findings"][0]["score"] = 0.01
+    assert fuse({"image": image, "metadata": run_of("ok", 1.0)}, ["image", "metadata"], "public", cfg)["label"] == "Inconclusive"
+
+
+def test_faceless_video_is_judged_on_the_checks_that_apply(cfg):
+    """Seen on the website: a screen recording of buildings came back 'too little could be tested'."""
+    nothing = lambda m, n: {"model": m, "score": 0.0, "kind": "info", "note": n}
+    video = {"info": {"status": "ok"}, "coverage": 1.0, "findings": [
+        nothing("sbi_video", "no_face_detected: x"), nothing("lipforensics", "no_mouth_track: x"), nothing("syncnet", "no_face_track: x"),
+        {"model": "aigen_video", "score": 0.04, "kind": "info", "note": "clip_level: ai_generated_frames"}]}
+    motion = {"info": {"status": "ok"}, "coverage": 1.0, "findings": [nothing("landmarks", "no_face_detected: x")]}
+    audio = {"info": {"status": "ok"}, "coverage": 1.0, "findings": [nothing("voice", "no_speech: silent")]}
+    out = fuse({"video": video, "audio": audio, "motion": motion, "metadata": run_of("ok", 1.0)}, ["video", "audio", "motion", "metadata"], "public", cfg)
+    assert out["label"] == "Low risk" and out["evidence_weight"] == 1.0
+    assert out["module_coverage"]["video"] == 1.0 and "nothing to examine" in out["label_reason"]

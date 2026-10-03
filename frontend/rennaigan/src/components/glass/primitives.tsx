@@ -120,6 +120,10 @@ export function CountUp({ value, decimals = 0, className }: { value: number; dec
       v: value, duration: d(1.1), ease: EASE.out,
       onUpdate: () => { if (ref.current) ref.current.textContent = fmt(state.v) },
     }))
+    // The number is evidence, the animation is not: whatever happens to the tween (hidden tab,
+    // throttled frames), the real value is on screen shortly after.
+    const settle = setTimeout(() => { if (ref.current) ref.current.textContent = fmt(value) }, 1600)
+    return () => clearTimeout(settle)
   }, [value, decimals])
   return <span ref={ref} className={cn('t-num', className)}>{fmt(value)}</span>
 }

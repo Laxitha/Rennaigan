@@ -93,15 +93,26 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
     fusion_cfg, labels = cfg["fusion"], cfg["labels"]
 
     scores: dict[str, float] = {}
+    not_applicable: list[str] = []
+    idle: set[str] = set()
     coverage: dict[str, float] = {}
     top: tuple[float, str, dict] | None = None
     for module in applicable:
         run = runs.get(module)
         cov = run["coverage"] if run and run["info"]["status"] in ("ok", "degraded") else 0.0
         learned = module not in fusion_cfg.get("heuristic_modules", [])
+        idle.update(f["model"] for f in (run["findings"] if run else []) if _no_data(f) and f["model"] not in ("ecapa", "c2patool"))
         raw, finding, empty = module_score(run["findings"], mode, cfg["thresholds"], learned, fusion_cfg.get("needs_corroboration")) if cov > 0 else (0.0, None, 0)
-        # A detector with nothing to examine is not evidence that the file is clean.
-        cov = max(0.0, cov - empty / max(len(MODULE_DETECTORS.get(module, [])), 1))
+        # A detector with nothing to examine (no face, no speech, no manifest) does not apply to
+        # this file. It is neither missing evidence nor evidence of authenticity, so it leaves
+        # the count: coverage is what ran out of what applied.
+        expected = max(len(MODULE_DETECTORS.get(module, [])), 1)
+        if empty and finding is None and raw == 0 and not any(not _no_data(f) and f["kind"] != "error" for f in run["findings"]):
+            not_applicable.append(module)
+            coverage[module] = 0.0
+            continue
+        if empty:
+            cov = max(0.0, (expected * cov - empty) / max(expected - empty, 1))
         coverage[module] = round(cov, 2)
         if cov <= 0:
             continue
@@ -112,10 +123,12 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
         if finding and (top is None or scores[module] > top[0]):
             top = (scores[module], module, finding)
 
-    total_weight = sum(weights.get(m, 0.0) for m in applicable)
+    # The file's own module always counts; other modules with nothing to examine drop out.
+    not_applicable = [m for m in not_applicable if m != (applicable[0] if applicable else None)]
+    total_weight = sum(weights.get(m, 0.0) for m in applicable if m not in not_applicable)
     live_weight = sum(weights.get(m, 0.0) * coverage[m] for m in scores)
     evidence_weight = live_weight / total_weight if total_weight else 0.0
-    missing = [m for m in applicable if coverage[m] < 1.0]
+    missing = [m for m in applicable if coverage[m] < 1.0 and m not in not_applicable]
 
     result = {
         "module_scores": {m: round(s, 4) for m, s in scores.items()},
@@ -146,6 +159,12 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
         # Seen live: the video module timed out and the file was called real on voice and motion alone.
         label = "Inconclusive"
         reasons.append(f"The {primary} detectors, which carry the verdict for this kind of file, produced no evidence.")
+    elif capped:
+        # A detector that is this sure is evidence of manipulation on its own. Detectors that
+        # could not run limit how firmly a file can be cleared, not whether it can be flagged.
+        label = "High manipulation indicators"
+        if missing:
+            reasons.append(f"Other detectors did not all run (incomplete: {', '.join(missing)}), so this rests on the signal above.")
     elif evidence_weight < fusion_cfg["inconclusive_coverage_threshold"]:
         label = "Inconclusive"
         reasons.append(f"Only {evidence_weight:.0%} of the applicable detector weight produced evidence"
@@ -156,7 +175,9 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
         label = "Review recommended"
     else:
         label = "High manipulation indicators"
-    if label != "Inconclusive" and missing:
+    if idle:
+        reasons.append(f"Checks that had nothing to examine in this file (no face or no speech): {', '.join(sorted(idle))}.")
+    if label not in ("Inconclusive", "High manipulation indicators") and missing:
         reasons.append(f"Incomplete modules: {', '.join(missing)}.")
 
     return {**result, "trust_score": trust, "label": label, "label_reason": " ".join(reasons)}
