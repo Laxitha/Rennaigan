@@ -5,8 +5,9 @@ Setup:
   2. Download fc_weights.pth → weights/univfd/fc_weights.pth
      (from https://github.com/WisconsinAIVision/UniversalFakeDetect)
 
-Input: whole image, 224x224 center crop, CLIP normalization.
-Output: P(fake) per image (sigmoid).
+Matches the official evaluation (repos/univfd/validate.py): OpenAI CLIP ViT-L/14 image
+features, a 224x224 centre crop with no downscaling (resizing removes the generator
+artifacts the classifier relies on), CLIP normalization, P(fake) = sigmoid(fc(features)).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from PIL import Image
 from torchvision import transforms
 
 from common.schema import Finding, ModuleResult
-from common.utils import file_sha256
+from common.utils import file_sha256, weights_sha256
 
 WEIGHTS_PATH = Path("weights/univfd/fc_weights.pth")
 MODEL = None
@@ -29,8 +30,16 @@ INPUT_SIZE = 224
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
+def _upscale_small(img: Image.Image) -> Image.Image:
+    """Only images smaller than the crop are resized; CenterCrop would otherwise pad with black."""
+    if min(img.size) >= INPUT_SIZE:
+        return img
+    scale = INPUT_SIZE / min(img.size)
+    return img.resize((max(INPUT_SIZE, round(img.width * scale)), max(INPUT_SIZE, round(img.height * scale))), Image.BICUBIC)
+
+
 TRANSFORM = transforms.Compose([
-    transforms.Resize(INPUT_SIZE, interpolation=transforms.InterpolationMode.BICUBIC),
+    transforms.Lambda(_upscale_small),
     transforms.CenterCrop(INPUT_SIZE),
     transforms.ToTensor(),
     transforms.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
@@ -50,11 +59,12 @@ def load_model():
 
     import open_clip
 
-    clip_model, _, _ = open_clip.create_model_and_transforms("ViT-L-14", pretrained="openai")
+    # The OpenAI weights were trained with QuickGELU; the plain "ViT-L-14" config uses a different activation.
+    clip_model, _, _ = open_clip.create_model_and_transforms("ViT-L-14-quickgelu", pretrained="openai")
     clip_model.eval()
 
     fc = torch.nn.Linear(768, 1)
-    fc.load_state_dict(torch.load(str(WEIGHTS_PATH), map_location="cpu"))
+    fc.load_state_dict(torch.load(str(WEIGHTS_PATH), map_location="cpu", weights_only=False))
     fc.eval()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -91,6 +101,6 @@ def analyze(file_path: Path) -> ModuleResult:
         module="image",
         file_sha256=sha,
         findings=findings,
-        weights_sha256={"univfd": "REPLACE_AFTER_DOWNLOAD"},
+        weights_sha256={"univfd": weights_sha256(WEIGHTS_PATH)},
         runtime_s=time.time() - t0,
     )

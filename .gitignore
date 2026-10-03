@@ -26,3 +26,4 @@ data/
 # Frontend
 node_modules/
 .DS_Store
+xlsr2_300m.pt

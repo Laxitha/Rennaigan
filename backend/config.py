@@ -14,7 +14,7 @@ MODULES = ["image", "video", "audio", "metadata", "motion"]
 
 MODULE_DETECTORS = {
     "image": ["sbi", "univfd", "trufor"],
-    "video": ["frame_scorer", "lipforensics", "syncnet"],
+    "video": ["sbi_video", "lipforensics", "syncnet"],
     "audio": ["ssl_aasist", "ecapa"],
     "metadata": ["exiftool", "ffprobe", "c2patool"],
     "motion": ["optical_flow", "head_pose", "smoothness", "identity_drift", "blink"],
@@ -59,6 +59,9 @@ DEFAULTS = {
         "strong_signal_max_trust": 30,
         "inconclusive_coverage_threshold": 0.5,
         "signal_floor": 0.3,
+        # Rule-based modules contribute to the average but cannot trigger the strong-signal cap.
+        "heuristic_modules": ["motion", "metadata"],
+        "heuristic_score_cap": 0.7,
     },
     "labels": {"low_risk": [70, 100], "review": [40, 69], "high_manipulation": [0, 39]},
     "weights_sha256": {},

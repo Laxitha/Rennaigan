@@ -1,19 +1,23 @@
-"""SyncNet — audio-video lip sync consistency checker.
+"""SyncNet — checks that the audio matches the lip movement of each tracked face.
 
 Setup:
   1. git clone https://github.com/joonson/syncnet_python.git repos/syncnet
   2. cd repos/syncnet && sh download_model.sh
   3. pip install python_speech_features scenedetect
 
-Input: 25 fps video with 16 kHz audio, split into 3-second windows.
-Pipeline: run_pipeline.py (face tracking) then run_syncnet.py
-Flag when: confidence < 3 or absolute offset > 3 frames (120ms).
+Runs the repo's own two scripts on the clip: run_pipeline.py (scene detection, face tracking,
+needs a face visible for at least 4 s) and run_syncnet.py, which logs one "AV offset" and
+"Confidence" per face track.
+
+A track is flagged when its confidence is below 3 or its offset exceeds 3 frames (120 ms).
+Low confidence also occurs when the tracked person is simply not the one speaking, so this
+detector's score is kept below the strong-signal level and never caps the trust score alone.
 """
 
 from __future__ import annotations
 
 import json
-import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -21,129 +25,83 @@ import time
 from pathlib import Path
 
 from common.schema import Finding, ModuleResult
-from common.utils import file_sha256
-from common.preprocess import get_video_duration
+from common.utils import file_sha256, weights_sha256
 
 REPO_PATH = Path("repos/syncnet")
+MODEL_PATH = REPO_PATH / "data/syncnet_v2.model"
+FACE_MODEL_PATH = REPO_PATH / "detectors/s3fd/weights/sfd_face.pth"
 CONFIDENCE_THRESHOLD = 3.0
 OFFSET_THRESHOLD_FRAMES = 3
-WINDOW_SEC = 3.0
-STRIDE_SEC = 1.5
+MAX_SECONDS = 60
+RESULT = re.compile(r"AV offset:\s*(-?\d+).*?Confidence:\s*(-?[\d.]+)", re.S)
 
 
-def run_syncnet_on_window(video_path: Path, start_sec: float, duration: float) -> dict | None:
-    """Run SyncNet pipeline on a video window. Returns {offset, confidence}."""
-    if not REPO_PATH.exists():
-        raise FileNotFoundError(
-            f"SyncNet repo not found at {REPO_PATH}.\n"
-            "git clone https://github.com/joonson/syncnet_python.git repos/syncnet"
-        )
+def _has_audio(path: Path) -> bool:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "json", str(path)],
+        capture_output=True, text=True, timeout=30,
+    )
+    return bool(json.loads(out.stdout or "{}").get("streams"))
 
-    with tempfile.TemporaryDirectory(prefix="syncnet_") as tmpdir:
-        window_path = Path(tmpdir) / "window.avi"
-        subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
-             "-i", str(video_path), "-r", "25",
-             "-vcodec", "libx264","-an", str(window_path),
-             "-loglevel", "error"],
-            check=True, capture_output=True,
-        )
 
-        audio_path = Path(tmpdir) / "window.wav"
-        subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
-             "-i", str(video_path), "-ar", "16000", "-ac", "1",
-             str(audio_path), "-loglevel", "error"],
-            check=True, capture_output=True,
-        )
+def _run(script: str, video: Path, data_dir: Path) -> str:
+    """Run one of the repo's scripts from inside the repo, where it expects its model files."""
+    proc = subprocess.run(
+        [sys.executable, script, "--videofile", str(video), "--reference", "clip", "--data_dir", str(data_dir)],
+        cwd=REPO_PATH, capture_output=True, text=True, timeout=900,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"SyncNet {script} failed: {(proc.stderr or proc.stdout).strip()[-400:]}")
+    return proc.stdout + "\n" + proc.stderr
 
-        if not window_path.exists() or not audio_path.exists():
-            return None
 
-        data_dir = Path(tmpdir) / "data"
-        data_dir.mkdir()
-
-        env = os.environ.copy()
-        env["PYTHONPATH"] = str(REPO_PATH)
-
-        try:
-            subprocess.run(
-                [sys.executable, str(REPO_PATH / "run_pipeline.py"),
-                 "--videofile", str(window_path),
-                 "--reference", "window",
-                 "--data_dir", str(data_dir)],
-                check=True, capture_output=True, timeout=60, env=env,
-            )
-
-            result = subprocess.run(
-                [sys.executable, str(REPO_PATH / "run_syncnet.py"),
-                 "--videofile", str(window_path),
-                 "--reference", "window",
-                 "--data_dir", str(data_dir)],
-                capture_output=True, text=True, timeout=60, env=env,
-            )
-
-            for line in result.stdout.strip().split("\n"):
-                if "AV offset" in line and "confidence" in line:
-                    parts = line.split(",")
-                    offset = int(parts[0].split()[-1])
-                    confidence = float(parts[1].split()[-1])
-                    return {"offset": offset, "confidence": confidence}
-
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            return None
-
-    return None
+def score_track(offset: int, confidence: float) -> float:
+    if confidence < CONFIDENCE_THRESHOLD:
+        return round(0.3 + 0.4 * (1.0 - max(confidence, 0.0) / CONFIDENCE_THRESHOLD), 4)  # 0.3 .. 0.7
+    if abs(offset) > OFFSET_THRESHOLD_FRAMES:
+        return round(min(0.5 + 0.05 * (abs(offset) - OFFSET_THRESHOLD_FRAMES), 0.8), 4)
+    return 0.0
 
 
 def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
     t0 = time.time()
     sha = file_sha256(file_path)
 
-    target = video25_path or file_path
+    for required in (MODEL_PATH, FACE_MODEL_PATH):
+        if not required.exists():
+            raise FileNotFoundError(f"SyncNet file not found: {required}. Run download_model.sh in {REPO_PATH}")
 
-    if not REPO_PATH.exists():
-        return ModuleResult(
-            module="video",
-            file_sha256=sha,
-            findings=[Finding(
-                model="syncnet", score=0.0,
-                note=f"SyncNet repo not found at {REPO_PATH}",
-            )],
-            runtime_s=time.time() - t0,
+    source = video25_path or file_path
+    if not _has_audio(source):
+        return ModuleResult(module="video", file_sha256=sha, runtime_s=time.time() - t0,
+                            findings=[Finding(model="syncnet", score=0.0, note="no_audio_stream: nothing to compare the lips against")])
+
+    with tempfile.TemporaryDirectory(prefix="syncnet_") as tmp:
+        clip = Path(tmp) / "clip.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", str(source), "-t", str(MAX_SECONDS), "-r", "25",
+             "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "16000", "-ac", "1", str(clip)],
+            check=True, capture_output=True, timeout=300,
         )
-
-    try:
-        duration = get_video_duration(target)
-    except Exception:
-        return ModuleResult(module="video", file_sha256=sha, findings=[], runtime_s=time.time() - t0)
+        data_dir = Path(tmp) / "work"
+        _run("run_pipeline.py", clip.resolve(), data_dir.resolve())
+        log = _run("run_syncnet.py", clip.resolve(), data_dir.resolve())
 
     findings: list[Finding] = []
-    pos = 0.0
-
-    while pos + WINDOW_SEC <= duration:
-        result = run_syncnet_on_window(target, pos, WINDOW_SEC)
-
-        if result is not None:
-            offset = result["offset"]
-            confidence = result["confidence"]
-
-            if confidence < CONFIDENCE_THRESHOLD or abs(offset) > OFFSET_THRESHOLD_FRAMES:
-                score = 1.0 - min(confidence / 10.0, 1.0)
-                findings.append(Finding(
-                    model="syncnet",
-                    score=score,
-                    start=pos,
-                    end=pos + WINDOW_SEC,
-                    note=f"av_offset={offset}frames, confidence={confidence:.2f}",
-                ))
-
-        pos += STRIDE_SEC
+    for i, (offset, confidence) in enumerate(RESULT.findall(log)):
+        offset, confidence = int(offset), float(confidence)
+        score = score_track(offset, confidence)
+        findings.append(Finding(
+            model="syncnet", score=score,
+            note=f"{'av_out_of_sync' if score else 'av_in_sync'}: face track {i + 1}, offset={offset} frames, confidence={confidence:.2f}",
+        ))
+    if not findings:
+        findings.append(Finding(model="syncnet", score=0.0, note="no_face_track: no face stayed in view for 4 seconds"))
 
     return ModuleResult(
         module="video",
         file_sha256=sha,
         findings=findings,
-        weights_sha256={"syncnet": "REPLACE_AFTER_DOWNLOAD"},
+        weights_sha256={"syncnet": weights_sha256(MODEL_PATH)},
         runtime_s=time.time() - t0,
     )

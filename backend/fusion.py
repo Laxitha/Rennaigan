@@ -12,14 +12,22 @@ import numpy as np
 
 from common.fusion import calibrate_score
 
+from .config import MODULE_DETECTORS
+
 
 def _model_score(scores: list[float]) -> float:
     # Many per-clip findings from one detector: the 90th percentile resists single outliers.
     return float(np.percentile(scores, 90)) if len(scores) >= 5 else max(scores)
 
 
-def module_score(findings: list[dict], mode: str) -> tuple[float, dict | None]:
-    """Strongest detector score in a module, and the finding behind it."""
+def _no_data(f: dict) -> bool:
+    """A detector saying it had nothing to examine (no face, no speech, no manifest)."""
+    return f["score"] == 0.0 and f["note"].startswith("no_")
+
+
+def module_score(findings: list[dict], mode: str) -> tuple[float, dict | None, int]:
+    """Strongest detector score in a module, the finding behind it, and how many of its
+    detectors had nothing to examine."""
     by_model: dict[str, list[dict]] = {}
     for f in findings:
         if f["kind"] == "error":
@@ -27,12 +35,16 @@ def module_score(findings: list[dict], mode: str) -> tuple[float, dict | None]:
         if f["model"] == "ecapa" and mode != "identity":
             continue
         by_model.setdefault(f["model"], []).append(f)
-    best, top = 0.0, None
+    best, top, empty = 0.0, None, 0
     for group in by_model.values():
-        score = _model_score([f["score"] for f in group])
+        scored = [f for f in group if not _no_data(f)]
+        if not scored:
+            empty += 1
+            continue
+        score = _model_score([f["score"] for f in scored])
         if score > best:
-            best, top = score, max(group, key=lambda f: f["score"])
-    return best, top
+            best, top = score, max(scored, key=lambda f: f["score"])
+    return best, top, empty
 
 
 def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> dict:
@@ -45,10 +57,14 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
     for module in applicable:
         run = runs.get(module)
         cov = run["coverage"] if run and run["info"]["status"] in ("ok", "degraded") else 0.0
+        raw, finding, empty = module_score(run["findings"], mode) if cov > 0 else (0.0, None, 0)
+        # A detector with nothing to examine is not evidence that the file is clean.
+        cov = max(0.0, cov - empty / max(len(MODULE_DETECTORS.get(module, [])), 1))
         coverage[module] = round(cov, 2)
         if cov <= 0:
             continue
-        raw, finding = module_score(run["findings"], mode)
+        if module in fusion_cfg.get("heuristic_modules", []):
+            raw = min(raw, float(fusion_cfg.get("heuristic_score_cap", 1.0)))
         scores[module] = calibrate_score(raw, float(cfg["temperatures"].get(module, 1.0))) if raw > 0 else 0.0
         if finding and (top is None or scores[module] > top[0]):
             top = (scores[module], module, finding)

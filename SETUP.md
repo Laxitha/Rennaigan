@@ -51,6 +51,15 @@ before exposing it with `--host 0.0.0.0` or a tunnel. To allow a hosted UI, add 
 
 Tests: `python -m pytest tests -q`
 
+## Running the detectors on Google Colab
+
+The models need a GPU and several GB of weights. `rennaigan_colab.ipynb` sets all of it up on a
+free Colab T4: open the notebook in Colab, choose **Runtime → Change runtime type → T4 GPU**,
+then **Run all**. It installs the detectors, downloads the weights, starts the backend, runs a
+self-test that reports each detector separately, and prints a public `trycloudflare.com`
+address. Paste that address into the UI under **Settings → ML Gateway**; the UI itself keeps
+running on your own machine with `npm run dev`.
+
 ## Quick Start (Metadata only — no GPU needed)
 
 ```bash

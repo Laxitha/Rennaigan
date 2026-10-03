@@ -7,6 +7,7 @@ Clip-level score = 90th percentile of smoothed scores.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -130,15 +131,27 @@ def analyze(file_path: Path, frames_dir: Path | None = None) -> ModuleResult:
     ]
 
     coverage = 1.0 - (no_face_count / len(frame_files)) if frame_files else 0.0
-    findings.append(Finding(
-        model="sbi_video",
-        score=clip_score,
-        note=f"clip_level_score_p90, visual_coverage={coverage:.2f}",
-    ))
+    if coverage == 0.0:
+        findings.append(Finding(model="sbi_video", score=0.0, note="no_face_detected: no frame contained a face to score"))
+    else:
+        findings.append(Finding(
+            model="sbi_video",
+            score=clip_score,
+            note=f"clip_level_score_p90, visual_coverage={coverage:.2f}",
+        ))
+
+    # Per-frame scores, so the UI and reviewers can see where in the clip the signal sits.
+    scores_path = file_path.with_suffix(".frame_scores.json")
+    scores_path.write_text(json.dumps({
+        "sample_fps": SAMPLE_FPS,
+        "frames": [{"t": round(t, 3), "score": round(r, 4), "smoothed": round(float(m), 4)}
+                   for t, r, m in zip(timestamps, raw_scores, smoothed)],
+    }))
 
     return ModuleResult(
         module="video",
         file_sha256=sha,
         findings=findings,
+        artifacts={"frame_scores": str(scores_path)},
         runtime_s=time.time() - t0,
     )

@@ -33,8 +33,8 @@ Architecture:
   - SSLModel loads xlsr2_300m.pt via fairseq, extracts 1024-d embeddings
   - AASIST graph attention network classifies embeddings
   - Input: (batch, 64600) raw audio at 16kHz
-  - Output: (batch, 2) logits — index 0 = bona fide, index 1 = spoof
-  - Score = softmax(output)[:, 1] = P(spoof)
+  - Output: (batch, 2) logits — index 0 = spoof, index 1 = bona fide
+  - Score = softmax(output)[:, 0] = P(spoof)
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ import soundfile as sf
 import torch
 
 from common.schema import Finding, ModuleResult
-from common.utils import file_sha256
+from common.utils import file_sha256, weights_sha256
 
 XLSR_PATH = Path("weights/xlsr2_300m.pt")
 AASIST_PATH = Path("weights/best_SSL_model_DF.pth")
@@ -61,7 +61,8 @@ WINDOW_SAMPLES = 64600  # ~4.04s, matches repo's cut length
 STRIDE_SAMPLES = SAMPLE_RATE * 2  # 2s stride (50% overlap)
 MIN_SPEECH_RATIO = 0.5
 THRESHOLD = 0.5
-SPOOF_INDEX = 1  # output[:, 1] = spoof probability
+# The repo labels bonafide as 1 and spoof as 0 (data_utils_SSL.py) and scores with output[:, 1].
+SPOOF_INDEX = 0
 
 
 def load_model():
@@ -85,6 +86,11 @@ def load_model():
             "  See Google Drive link in the repo README"
         )
 
+    # model.py loads the XLS-R checkpoint by bare file name from the working directory.
+    link = Path("xlsr2_300m.pt")
+    if not link.exists():
+        link.symlink_to(XLSR_PATH.resolve())
+
     sys.path.insert(0, str(REPO_PATH))
     from model import Model
 
@@ -99,7 +105,7 @@ def load_model():
     model = model.to(DEVICE)
 
     # Load pretrained weights
-    checkpoint = torch.load(str(AASIST_PATH), map_location=DEVICE)
+    checkpoint = torch.load(str(AASIST_PATH), map_location=DEVICE, weights_only=False)
     if "model_state_dict" in checkpoint:
         model.load_state_dict(checkpoint["model_state_dict"])
     elif isinstance(checkpoint, dict) and "state_dict" in checkpoint:
@@ -175,10 +181,12 @@ def analyze(file_path: Path, audio_path: Path | None = None) -> ModuleResult:
         )
 
     # VAD filtering
+    # Without a working VAD every window is scored, silence included.
     try:
         from audio.vad import get_speech_ratio
+        get_speech_ratio(audio[:WINDOW_SAMPLES], SAMPLE_RATE)
         has_vad = True
-    except ImportError:
+    except Exception:
         has_vad = False
 
     findings: list[Finding] = []
@@ -230,8 +238,8 @@ def analyze(file_path: Path, audio_path: Path | None = None) -> ModuleResult:
         findings=findings,
         artifacts={"spectrogram": spectrogram_path},
         weights_sha256={
-            "ssl_aasist": "REPLACE_WITH_SHA256_OF_best_SSL_model_DF.pth",
-            "xlsr_300m": "REPLACE_WITH_SHA256_OF_xlsr2_300m.pt",
+            "ssl_aasist": weights_sha256(AASIST_PATH),
+            "xlsr_300m": weights_sha256(XLSR_PATH),
         },
         runtime_s=time.time() - t0,
     )

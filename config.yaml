@@ -59,6 +59,8 @@ fusion:
   strong_signal_max_trust: 30
   inconclusive_coverage_threshold: 0.5
   signal_floor: 0.3   # findings at or above this score are reported as signals
+  heuristic_modules: [motion, metadata]   # rule-based checks: averaged in, but never trigger the strong-signal cap
+  heuristic_score_cap: 0.7
 
 labels:
   low_risk: [70, 100]

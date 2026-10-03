@@ -1,25 +1,25 @@
-"""LipForensics — lip-based deepfake detector.
+"""LipForensics — detects forged faces from mouth-motion irregularities.
 
 Setup:
   1. git clone https://github.com/ahaliassos/LipForensics.git repos/lipforensics
-  2. Download weights:
-     lipforensics_ff.pth → repos/lipforensics/models/weights/lipforensics_ff.pth
-     (Google Drive: https://drive.google.com/file/d/1wfZnxZpyNd5ouJs0LjVls7zU0N_W73L7)
-  3. pip install face_alignment torchvision
+  2. Download lipforensics_ff.pth (link in its README) to weights/lipforensics_ff.pth
+  3. pip install face_alignment scikit-image
 
-Architecture:
-  - ResNet18 spatial features + Multi-scale Temporal CNN
-  - Class: Lipreading, loaded via get_model() factory
-  - Forward: model(x, lengths) where x=(batch,1,frames,88,88)
-  - Input: grayscale mouth crops, center-cropped from 96→88px
-  - Normalization: mean=0.421, std=0.165
-  - Checkpoint key: "model"
+Follows the official pipeline:
+  - preprocessing/crop_mouths.py: 68-point landmarks, smoothed over 12 frames, each frame
+    similarity-warped to the mean face at 256x256, 96x96 mouth crop
+  - evaluate.py: 25-frame grayscale clips at 25 fps, centre-cropped to 88x88,
+    normalized with mean 0.421 / std 0.165; sigmoid(logit) is P(fake)
 """
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
+import tempfile
 import time
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -27,187 +27,192 @@ import numpy as np
 import torch
 
 from common.schema import Finding, ModuleResult
-from common.utils import file_sha256
+from common.utils import file_sha256, weights_sha256
 
-WEIGHTS_PATH = Path("repos/lipforensics/models/weights/lipforensics_ff.pth")
-WEIGHTS_ALT_PATH = Path("weights/lipforensics_ff.pth")
 REPO_PATH = Path("repos/lipforensics")
+WEIGHTS_CANDIDATES = [Path("weights/lipforensics_ff.pth"), REPO_PATH / "models/weights/lipforensics_ff.pth"]
 MODEL = None
 DEVICE = None
+LANDMARKER = None
+MEAN_FACE = None
+
+FPS = 25
 CLIP_LENGTH = 25
-STRIDE = 25
-CROP_SIZE = 96
-MOUTH_SIZE = 88
+MAX_SECONDS = 60
+STD_SIZE = (256, 256)
+STABLE_POINTS = [33, 36, 39, 42, 45]
+MOUTH = slice(48, 68)
+CROP = 96
+INPUT = 88
+WINDOW_MARGIN = 12
+GRAY_MEAN, GRAY_STD = 0.421, 0.165
 THRESHOLD = 0.5
 
-MOUTH_LANDMARKS = list(range(48, 68))
-STABLE_POINTS = [33, 36, 39, 42, 45]
 
-GRAY_MEAN = 0.421
-GRAY_STD = 0.165
+def _weights_path() -> Path:
+    for path in WEIGHTS_CANDIDATES:
+        if path.exists():
+            return path
+    raise FileNotFoundError(f"LipForensics weights not found. Download lipforensics_ff.pth to {WEIGHTS_CANDIDATES[0]}")
 
 
 def load_model():
-    global MODEL, DEVICE
+    global MODEL, DEVICE, LANDMARKER, MEAN_FACE
     if MODEL is not None:
         return MODEL
 
-    weights_path = WEIGHTS_PATH if WEIGHTS_PATH.exists() else WEIGHTS_ALT_PATH
-    if not weights_path.exists():
-        raise FileNotFoundError(
-            f"LipForensics weights not found.\n"
-            f"Download lipforensics_ff.pth to {WEIGHTS_PATH} or {WEIGHTS_ALT_PATH}"
-        )
+    weights = _weights_path()
     if not REPO_PATH.exists():
         raise FileNotFoundError(
             f"LipForensics repo not found at {REPO_PATH}.\n"
             "git clone https://github.com/ahaliassos/LipForensics.git repos/lipforensics"
         )
 
-    sys.path.insert(0, str(REPO_PATH))
+    import face_alignment
+
+    sys.path.insert(0, str(REPO_PATH.resolve()))
+    from models.spatiotemporal_net import Lipreading
+
+    # Built here rather than through the repo's get_model(), which assumes its own working
+    # directory and a CUDA device.
+    cfg = json.loads((REPO_PATH / "models/configs/lrw_resnet18_mstcn.json").read_text())
+    tcn_options = {
+        "num_layers": cfg["tcn_num_layers"], "kernel_size": cfg["tcn_kernel_size"], "dropout": cfg["tcn_dropout"],
+        "dwpw": cfg["tcn_dwpw"], "width_mult": cfg["tcn_width_mult"],
+    }
+    model = Lipreading(num_classes=1, tcn_options=tcn_options, relu_type=cfg["relu_type"])
+    model.load_state_dict(torch.load(str(weights), map_location="cpu", weights_only=False)["model"])
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    from models.spatiotemporal_net import get_model
-    MODEL = get_model(
-        weights_forgery_path=str(weights_path),
-        device=str(DEVICE),
-    )
-    MODEL.eval()
+    LANDMARKER = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, device=DEVICE.type, flip_input=False)
+    MEAN_FACE = np.load(REPO_PATH / "preprocessing/20words_mean_face.npy")
+    MODEL = model.eval().to(DEVICE)
     return MODEL
 
 
-def extract_mouth_crops(video_path: Path) -> list[np.ndarray]:
-    """Extract aligned grayscale mouth crops from 25fps video.
+def _landmarks(frame_rgb: np.ndarray) -> np.ndarray | None:
+    found = LANDMARKER.get_landmarks(frame_rgb)
+    if not found:
+        return None
+    # largest face in the frame
+    return max(found, key=lambda lm: np.ptp(lm[:, 0]) * np.ptp(lm[:, 1]))[:, :2]
 
-    Returns list of arrays, each (clip_length, 96, 96) — one per 1-second clip.
-    Center-cropping to 88x88 happens at inference time.
+
+class _RunCropper:
+    """Mouth crops for one uninterrupted run of frames, as in preprocessing/crop_mouths.py.
+
+    Landmarks are averaged over WINDOW_MARGIN frames before estimating the alignment, so only
+    that many frames are held in memory at a time.
     """
-    try:
-        import face_alignment
-    except ImportError:
-        raise FileNotFoundError("pip install face_alignment")
 
-    fa = face_alignment.FaceAlignment(
-        face_alignment.LandmarksType.TWO_D,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        flip_input=False,
-    )
+    def __init__(self):
+        from preprocessing.utils import apply_transform, cut_patch, warp_img
+        self._apply, self._cut, self._warp = apply_transform, cut_patch, warp_img
+        self.frames: deque = deque()
+        self.landmarks: deque = deque()
+        self.trans = None
+        self.crops: list[np.ndarray] = []
 
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        return []
+    def _patch(self, aligned: np.ndarray, landmarks: np.ndarray) -> np.ndarray:
+        patch = self._cut(aligned, self.trans(landmarks)[MOUTH], CROP // 2, CROP // 2)
+        return cv2.cvtColor(patch.astype(np.uint8), cv2.COLOR_RGB2GRAY)
 
-    all_mouths = []
-    while True:
-        ret, frame = cap.read()
-        if not ret:
+    def push(self, frame_rgb: np.ndarray, landmarks: np.ndarray) -> None:
+        self.frames.append(frame_rgb)
+        self.landmarks.append(landmarks)
+        if len(self.frames) == WINDOW_MARGIN:
+            smoothed = np.mean(list(self.landmarks), axis=0)
+            frame, current = self.frames.popleft(), self.landmarks.popleft()
+            aligned, self.trans = self._warp(smoothed[STABLE_POINTS], MEAN_FACE[STABLE_POINTS], frame, STD_SIZE)
+            self.crops.append(self._patch(aligned, current))
+
+    def finish(self) -> list[np.ndarray]:
+        """Crop the frames still queued with the last alignment, and return the whole run."""
+        while self.frames and self.trans is not None:
+            frame, current = self.frames.popleft(), self.landmarks.popleft()
+            self.crops.append(self._patch(self._apply(self.trans, frame, STD_SIZE), current))
+        return self.crops
+
+
+def extract_mouth_segments(video25: Path) -> list[tuple[int, np.ndarray]]:
+    """Aligned 96x96 grayscale mouth crops, as runs of consecutive frames with a visible face.
+
+    Returns [(first_frame_index, array of shape (n, 96, 96))] for runs of at least one clip.
+    """
+    segments: list[tuple[int, np.ndarray]] = []
+    run, run_start = None, 0
+
+    def close():
+        nonlocal run
+        if run is not None:
+            try:
+                crops = run.finish()
+            except Exception:  # cut_patch rejects a mouth too close to the frame edge
+                crops = run.crops
+            if len(crops) >= CLIP_LENGTH:
+                segments.append((run_start, np.stack(crops)))
+        run = None
+
+    cap = cv2.VideoCapture(str(video25))
+    index = 0
+    while index < MAX_SECONDS * FPS:
+        ok, frame = cap.read()
+        if not ok:
             break
-
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        landmarks = fa.get_landmarks(frame)
-        if landmarks is None or len(landmarks) == 0:
-            all_mouths.append(None)
-            continue
-
-        lm = landmarks[0]
-        mouth_pts = lm[MOUTH_LANDMARKS]
-        cx, cy = mouth_pts.mean(axis=0).astype(int)
-        half_size = CROP_SIZE // 2
-
-        y1 = max(0, cy - half_size)
-        y2 = min(gray.shape[0], cy + half_size)
-        x1 = max(0, cx - half_size)
-        x2 = min(gray.shape[1], cx + half_size)
-
-        mouth_crop = gray[y1:y2, x1:x2]
-        if mouth_crop.size == 0:
-            all_mouths.append(None)
-            continue
-
-        mouth_crop = cv2.resize(mouth_crop, (CROP_SIZE, CROP_SIZE))
-        all_mouths.append(mouth_crop)
-
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        landmarks = _landmarks(rgb)
+        if landmarks is None:
+            close()
+        else:
+            if run is None:
+                run, run_start = _RunCropper(), index
+            try:
+                run.push(rgb, landmarks)
+            except Exception:
+                close()
+        index += 1
     cap.release()
-
-    clips = []
-    for start in range(0, len(all_mouths) - CLIP_LENGTH + 1, STRIDE):
-        clip_frames = all_mouths[start:start + CLIP_LENGTH]
-        if any(f is None for f in clip_frames):
-            continue
-        clip = np.stack(clip_frames, axis=0).astype(np.float32) / 255.0
-        clips.append(clip)
-
-    return clips
-
-
-def preprocess_clip(clip: np.ndarray) -> torch.Tensor:
-    """Convert (T, 96, 96) grayscale clip to model input (1, 1, T, 88, 88)."""
-    t, h, w = clip.shape
-    offset = (CROP_SIZE - MOUTH_SIZE) // 2
-    cropped = clip[:, offset:offset + MOUTH_SIZE, offset:offset + MOUTH_SIZE]
-
-    normalized = (cropped - GRAY_MEAN) / GRAY_STD
-
-    tensor = torch.from_numpy(normalized).float()
-    return tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, T, 88, 88)
+    close()
+    return segments
 
 
 def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
     t0 = time.time()
     sha = file_sha256(file_path)
+    model = load_model()
 
-    target = video25_path or file_path
-
-    try:
-        model = load_model()
-    except FileNotFoundError as e:
-        return ModuleResult(
-            module="video", file_sha256=sha,
-            findings=[Finding(model="lipforensics", score=0.0, note=str(e))],
-            runtime_s=time.time() - t0,
-        )
-
-    try:
-        clips = extract_mouth_crops(target)
-    except FileNotFoundError as e:
-        return ModuleResult(
-            module="video", file_sha256=sha,
-            findings=[Finding(model="lipforensics", score=0.0, note=str(e))],
-            runtime_s=time.time() - t0,
-        )
-
-    if not clips:
-        return ModuleResult(
-            module="video", file_sha256=sha,
-            findings=[Finding(model="lipforensics", score=0.0, note="no_mouth_crops_extracted")],
-            runtime_s=time.time() - t0,
-        )
+    with tempfile.TemporaryDirectory(prefix="lipforensics_") as tmp:
+        video25 = video25_path
+        if video25 is None:
+            video25 = Path(tmp) / "video25.mp4"
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(file_path), "-t", str(MAX_SECONDS), "-an",
+                 "-vf", "scale=-2:'min(720,ih)'", "-r", str(FPS), "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(video25)],
+                check=True, capture_output=True, timeout=300,
+            )
+        segments = extract_mouth_segments(video25)
 
     findings: list[Finding] = []
-    for i, clip in enumerate(clips):
-        tensor = preprocess_clip(clip).to(DEVICE)
-        lengths = [CLIP_LENGTH]
+    offset = (CROP - INPUT) // 2
+    for seg_start, crops in segments:
+        for i in range(0, len(crops) - CLIP_LENGTH + 1, CLIP_LENGTH):
+            clip = crops[i:i + CLIP_LENGTH, offset:offset + INPUT, offset:offset + INPUT].astype(np.float32) / 255.0
+            tensor = torch.from_numpy((clip - GRAY_MEAN) / GRAY_STD)[None, None].to(DEVICE)  # (1, 1, T, 88, 88)
+            with torch.no_grad():
+                score = float(torch.sigmoid(model(tensor, lengths=[CLIP_LENGTH])).item())
+            start = (seg_start + i) / FPS
+            findings.append(Finding(
+                model="lipforensics", score=score, start=round(start, 2), end=round(start + CLIP_LENGTH / FPS, 2),
+                note="lip_deepfake_detected" if score >= THRESHOLD else "lip_appears_genuine",
+            ))
 
-        with torch.no_grad():
-            logits = model(tensor, lengths)
-            score = torch.sigmoid(logits).item()
-
-        start_sec = i * (STRIDE / 25.0)
-        end_sec = start_sec + (CLIP_LENGTH / 25.0)
-
-        findings.append(Finding(
-            model="lipforensics",
-            score=score,
-            start=start_sec,
-            end=end_sec,
-            note="lip_deepfake_detected" if score >= THRESHOLD else "lip_appears_genuine",
-        ))
+    if not findings:
+        findings.append(Finding(model="lipforensics", score=0.0, note="no_mouth_track: no face stayed visible for a full second"))
 
     return ModuleResult(
         module="video",
         file_sha256=sha,
         findings=findings,
-        weights_sha256={"lipforensics": "REPLACE_AFTER_DOWNLOAD"},
+        weights_sha256={"lipforensics": weights_sha256(_weights_path())},
         runtime_s=time.time() - t0,
     )

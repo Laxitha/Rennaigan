@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -24,7 +25,7 @@ from typing import Literal
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import __version__, config, media, rag
@@ -167,14 +168,21 @@ def create_app(cfg: dict | None = None) -> FastAPI:
         return [{"name": Path(n).stem, "module": "gateway", "url": f"/artifacts/{case_id}/{n}",
                  "content_type": media.content_type(n), "available": True} for n in made]
 
-    async def analyze_upload(upload: UploadFile, mode: str, batch_id: str | None = None) -> dict:
+    async def ingest(upload: UploadFile) -> tuple:
+        """Validate and store an upload. Every rejection (type, size, undecodable) happens here."""
         tmp, name, sha, size = await receive(upload)
         try:
             info = await asyncio.to_thread(media.probe, tmp, name)
         except media.UnsupportedMedia as exc:
             tmp.unlink(missing_ok=True)
             raise HTTPException(415, str(exc))
+        return tmp, name, sha, size, info
 
+    async def analyze_upload(upload: UploadFile, mode: str, batch_id: str | None = None) -> dict:
+        return await run_case(await ingest(upload), mode, batch_id)
+
+    async def run_case(ingested: tuple, mode: str, batch_id: str | None = None) -> dict:
+        tmp, name, sha, size, info = ingested
         t0 = time.monotonic()
         st = store()
         case_id, n = st.new_case_id()
@@ -216,6 +224,11 @@ def create_app(cfg: dict | None = None) -> FastAPI:
                             duration_ms=int(run["info"]["elapsed_s"] * 1000),
                             extra={"findings": run["info"]["findings_count"], **{f"weights.{k}": v for k, v in run["info"]["weights_sha256"].items()}})
         artifacts.extend(await asyncio.to_thread(gateway_artifacts, case_id, media_path, info, art_dir))
+        # The UI overlays the first heatmap it finds, so lead with the strongest detector's.
+        top_score: dict[str, float] = {}
+        for f in findings:
+            top_score[f["model"]] = max(top_score.get(f["model"], 0.0), f["score"])
+        artifacts.sort(key=lambda a: -top_score.get(a["name"].split("_")[0], -1.0 if a["module"] == "gateway" else 0.0))
 
         fused = fuse(runs, applicable, mode, cfg)
         st.append_audit(case_id, "fusion.computed",
@@ -291,7 +304,20 @@ def create_app(cfg: dict | None = None) -> FastAPI:
                       batch_id: str | None = Form(None)):
         if batch_id is not None and not BATCH_ID.match(batch_id):
             raise HTTPException(422, "batch_id must look like BT-<12 hex characters>.")
-        return await analyze_upload(file, mode, batch_id)
+        ingested = await ingest(file)
+        task = asyncio.create_task(run_case(ingested, mode, batch_id))
+
+        async def body():
+            # Detector runs can take minutes, and tunnels and proxies drop a request that stays
+            # silent that long. JSON allows leading whitespace, so a space is sent while waiting.
+            while not (await asyncio.wait({task}, timeout=15))[0]:
+                yield b" "
+            try:
+                yield json.dumps(task.result()).encode()
+            except Exception as exc:
+                yield json.dumps({"detail": f"Analysis failed: {type(exc).__name__}: {exc}"}).encode()
+
+        return StreamingResponse(body(), media_type="application/json")
 
     @app.post("/bulk")
     async def bulk(files: list[UploadFile] = File(...), mode: Literal["public", "identity"] = Form("public")):

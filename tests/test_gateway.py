@@ -238,3 +238,18 @@ def test_rag_retrieves_case_findings(client, samples):
     assert client.get("/rag/status").json()["documents_indexed"] >= 1
     hits = client.post("/rag/query", json={"query": "trust score label", "k": 3}).json()["hits"]
     assert hits and hits[0]["case_id"] == case["id"]
+
+
+def test_fusion_rule_based_modules_cannot_cap_trust(cfg):
+    runs = {"video": run_of("ok", 1.0), "motion": run_of("ok", 1.0, ("smoothness", 1.0)), "metadata": run_of("ok", 1.0)}
+    out = fuse(runs, ["video", "motion", "metadata"], "public", cfg)
+    assert out["module_scores"]["motion"] == pytest.approx(0.7)
+    assert out["trust_score"] > 30
+
+
+def test_fusion_detector_with_nothing_to_examine_is_not_clean_evidence(cfg):
+    no_face = {"info": {"status": "ok"}, "coverage": 1.0, "findings": [
+        {"model": m, "score": 0.0, "kind": "info", "note": n}
+        for m, n in (("sbi_video", "no_face_detected"), ("lipforensics", "no_mouth_track"), ("syncnet", "no_face_track"))]}
+    out = fuse({"video": no_face}, ["video"], "public", cfg)
+    assert out["module_coverage"]["video"] == 0 and out["trust_score"] is None

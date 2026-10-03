@@ -58,7 +58,7 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
         all_landmarks.append(lm)
 
         # Face detection + embedding at 3fps for identity drift
-        if frame_idx % int(fps / 3) == 0:
+        if frame_idx % max(1, int(fps / 3)) == 0:
             faces = detect_faces(frame)
             largest = get_largest_face(faces)
             if largest:
@@ -95,37 +95,37 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
                 [f["box"] for f in frames_for_flow],
             )
             all_findings.extend(flow_findings)
-    except Exception:
-        pass
+    except Exception as e:
+        all_findings.append(Finding(model="optical_flow", score=0.0, note=f"error: {e}"))
 
     # 2. Head pose agreement
     try:
         if frame_shape is not None:
             pose_findings = analyze_head_pose(all_landmarks, frame_shape)
             all_findings.extend(pose_findings)
-    except Exception:
-        pass
+    except Exception as e:
+        all_findings.append(Finding(model="head_pose", score=0.0, note=f"error: {e}"))
 
     # 3. Motion smoothness (jerk)
     try:
         jerk_findings = compute_jerk(all_landmarks)
         all_findings.extend(jerk_findings)
-    except Exception:
-        pass
+    except Exception as e:
+        all_findings.append(Finding(model="smoothness", score=0.0, note=f"error: {e}"))
 
     # 4. Identity drift
     try:
         drift_findings = analyze_identity_drift(all_embeddings, fps=3.0)
         all_findings.extend(drift_findings)
-    except Exception:
-        pass
+    except Exception as e:
+        all_findings.append(Finding(model="identity_drift", score=0.0, note=f"error: {e}"))
 
     # 5. Blink dynamics
     try:
         blink_findings = analyze_blinks(all_landmarks)
         all_findings.extend(blink_findings)
-    except Exception:
-        pass
+    except Exception as e:
+        all_findings.append(Finding(model="blink", score=0.0, note=f"error: {e}"))
 
     return ModuleResult(
         module="motion",
