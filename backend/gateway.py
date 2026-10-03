@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, config, media, rag
+from . import __version__, assess, config, media, rag
 from .detectors import run_module, service_up
 from .fusion import fuse
 from .store import Store, now_iso, result_digest
@@ -37,7 +37,7 @@ CASE_ID = re.compile(r"^RG-\d{4}-\d{5,}$")
 BATCH_ID = re.compile(r"^BT-[0-9a-f]{12}$")
 LOCAL_ORIGIN = r"^https?://(localhost|127\.\d+\.\d+\.\d+|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|[^./]+\.local)(:\d+)?$"
 SUMMARY_KEYS = ("id", "created_at", "mode", "batch_id", "file", "media", "trust_score", "label", "label_reason",
-                "evidence_weight", "module_scores", "total_findings", "runtime_s", "review", "modules")
+                "evidence_weight", "module_scores", "total_findings", "runtime_s", "review", "modules", "verdict")
 MAX_ARTIFACT_BYTES = 50 * 1024 * 1024
 
 
@@ -61,6 +61,7 @@ def create_app(cfg: dict | None = None) -> FastAPI:
     tmp_dir = data_dir / "tmp"
     max_bytes = int(cfg["preprocessing"]["max_upload_mb"]) * 1024 * 1024
     urls = {m: cfg["services"][m]["url"].rstrip("/") for m in config.MODULES}
+    assessment_cfg = cfg["assessment"]
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -256,10 +257,35 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             "artifacts": artifacts,
             "gateway_version": __version__,
         }
+        await add_verdict(doc)
+        doc["runtime_s"] = round(time.monotonic() - t0, 3)
         st.save_case(doc, n)
         st.append_audit(case_id, "case.sealed", "Analysis result stored. Its digest is sealed into this entry.",
                         duration_ms=int(doc["runtime_s"] * 1000), extra={"result_sha256": result_digest(doc)})
         return st.get_case(case_id)
+
+    async def add_verdict(doc: dict) -> None:
+        """Set doc["verdict"]: Claude's reasoned verdict when it is available, else the fused one."""
+        st = store()
+        doc["fusion_verdict"] = doc["verdict"] = assess.fusion_verdict(doc, cfg)
+        doc["assessment"], doc["assessment_error"] = None, None
+        if not (assessment_cfg["enabled"] and assess.available()):
+            return
+        t0 = time.monotonic()
+        earlier = [c for c in st.list_cases(200)[1] if c["id"] != doc["id"]]
+        try:
+            result = await asyncio.wait_for(assess.assess(doc, earlier, assessment_cfg["model"]), timeout=float(assessment_cfg["timeout_s"]))
+        except Exception as exc:
+            doc["assessment_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+            st.append_audit(doc["id"], "assessment.failed", doc["assessment_error"], actor=assessment_cfg["model"],
+                            duration_ms=int((time.monotonic() - t0) * 1000))
+            return
+        doc["assessment"] = result
+        doc["verdict"] = {"verdict": result["verdict"], "confidence": result["confidence"], "source": "claude", "headline": result["headline"]}
+        st.append_audit(doc["id"], "assessment.generated",
+                        f"{result['verdict']} at {result['confidence']}% confidence. {result['headline'][:200]}",
+                        actor=result["model"], duration_ms=int((time.monotonic() - t0) * 1000),
+                        extra={"fusion_verdict": doc["fusion_verdict"]["verdict"], "similar_cases": ",".join(result["similar_cases_used"])})
 
     # -------------------------------------------------------------- status
 
@@ -280,6 +306,7 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             "tools": {t: shutil.which(t) is not None for t in ("ffmpeg", "ffprobe", "exiftool", "c2patool")},
             "gateway": {"version": __version__, "cases": store().count_cases(), "keep_media": bool(gw["keep_media"])},
             "rag": {"enabled": True, "retriever": rag.RETRIEVER},
+            "assessment": {"enabled": bool(assessment_cfg["enabled"] and assess.available()), "model": assessment_cfg["model"]},
         }
 
     @app.get("/info")
@@ -378,6 +405,18 @@ def create_app(cfg: dict | None = None) -> FastAPI:
         return load_case(case_id)
 
     # --------------------------------------------------------------- audit
+
+    @app.post("/cases/{case_id}/assess")
+    async def reassess(case_id: str):
+        """Generate the reasoned verdict again, for example after an API key was added."""
+        doc = load_case(case_id)
+        if not (assessment_cfg["enabled"] and assess.available()):
+            raise HTTPException(503, "Reasoned assessment is not configured. Set ANTHROPIC_API_KEY on the gateway and install the anthropic package.")
+        doc.pop("audit", None)
+        await add_verdict(doc)
+        store().save_case(doc, int(case_id.rsplit("-", 1)[1]))
+        store().append_audit(case_id, "case.sealed", "Result re-sealed after a new assessment.", extra={"result_sha256": result_digest(doc)})
+        return load_case(case_id)
 
     @app.get("/cases/{case_id}/audit/verify")
     async def verify_case(case_id: str):

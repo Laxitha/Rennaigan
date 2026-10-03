@@ -10,7 +10,7 @@ import { EmptyState, ErrorState, ForensicLoader, GlassBadge, GlassButton, GlassI
 import { InvestigationTable } from '@/components/forensic/InvestigationTable'
 import { MediaFrame, RegionBox } from '@/components/forensic/MediaFrame'
 import { RadialSignal } from '@/components/forensic/RadialSignal'
-import { LevelBadge, StatusBadge } from '@/components/forensic/meta'
+import { LevelBadge, StatusBadge, VerdictBadge } from '@/components/forensic/meta'
 import type { CaseFull } from '@/types'
 
 const MODALITIES = ['visual', 'audio', 'lipsync', 'metadata', 'temporal'] as const
@@ -102,6 +102,7 @@ export default function Overview() {
               <div className="flex min-w-0 flex-col">
                 <p className="t-mono text-accent-2">{active.id}</p>
                 <p className="mt-1 truncate text-xl font-[540] tracking-[-0.02em]">{active.media}</p>
+                {active.rawCase?.verdict && <VerdictBadge verdict={active.rawCase.verdict} className="mt-3 self-start" />}
                 <p className="mt-2 text-sm text-fg-2">{active.finding}</p>
                 <GlassInspector dense className="mt-5" rows={[
                   { label: 'File format', value: active.format },

@@ -11,7 +11,7 @@ import { absUrl, useBackendUrl } from '@/services/backend'
 import { CopyButton, CountUp, GlassBadge, GlassButton, GlassInspector, GlassModal, GlassPanel, useToast } from '@/components/glass'
 import { MediaFrame, RegionBox } from '@/components/forensic/MediaFrame'
 import { Spectrogram } from '@/components/forensic/Spectrogram'
-import { LevelBadge, SEVERITY_TONE } from '@/components/forensic/meta'
+import { LevelBadge, SEVERITY_TONE, VERDICT_META, VerdictBadge } from '@/components/forensic/meta'
 import { ForensicTimeline } from '@/components/timeline/ForensicTimeline'
 import { EvidenceGraph } from '@/components/graph/EvidenceGraph'
 
@@ -148,6 +148,45 @@ export default function Report() {
 
       <GlassPanel data-reveal level={4} as="section" aria-labelledby="assessment-h" pad="lg" className="mb-8">
         <h2 id="assessment-h" className="t-label text-accent-3">Forensic assessment</h2>
+        {caseFull?.verdict && (
+          <div className="mt-5 border-b border-line pb-6">
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="text-[2rem] font-[540] leading-none tracking-[-0.03em]">{VERDICT_META[caseFull.verdict.verdict].label}</p>
+              <VerdictBadge verdict={caseFull.verdict} />
+            </div>
+            <p className="mt-3 max-w-[70ch] text-[0.9375rem] leading-relaxed text-fg">{caseFull.assessment?.explanation || caseFull.verdict.headline}</p>
+            {caseFull.assessment && (
+              <>
+                <ul className="mt-5 grid gap-2">
+                  {caseFull.assessment.evidence.map((e, i) => (
+                    <li key={i} className="glass-inner flex flex-wrap items-start gap-x-4 gap-y-1 p-3 text-sm">
+                      <GlassBadge tone={e.direction === 'points_to_manipulation' ? 'danger' : e.direction === 'points_to_authentic' ? 'ok' : 'neutral'}>
+                        {e.direction === 'points_to_manipulation' ? 'Manipulation' : e.direction === 'points_to_authentic' ? 'Authentic' : 'Neutral'}
+                      </GlassBadge>
+                      <span className="min-w-0 flex-1 basis-64 text-fg-2"><span className="font-[540] text-fg">{e.detector}.</span> {e.observation}</span>
+                    </li>
+                  ))}
+                </ul>
+                {caseFull.assessment.caveats.length > 0 && (
+                  <div className="mt-5">
+                    <h3 className="t-label">Caveats</h3>
+                    <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-fg-2">
+                      {caseFull.assessment.caveats.map((c, i) => <li key={i}>{c}</li>)}
+                    </ul>
+                  </div>
+                )}
+                <p className="mt-5 text-sm text-fg-2"><span className="font-[540] text-fg">Recommended next step.</span> {caseFull.assessment.recommendation}</p>
+              </>
+            )}
+            <p className="t-meta mt-4">
+              {caseFull.verdict.source === 'claude'
+                ? `Written by ${caseFull.assessment?.model} from the detector findings, detector reference notes and ${caseFull.assessment?.similar_cases_used.length ?? 0} similar earlier cases. The model did not see the media. Rule-based verdict from the scores alone: ${VERDICT_META[caseFull.fusion_verdict?.verdict ?? caseFull.verdict.verdict].label}.`
+                : caseFull.assessment_error
+                  ? `Rule-based verdict from the fused detector scores. The reasoned assessment failed: ${caseFull.assessment_error}`
+                  : 'Rule-based verdict from the fused detector scores. Add an Anthropic API key on the gateway for a reasoned assessment.'}
+            </p>
+          </div>
+        )}
         <div className="mt-6 grid gap-x-10 gap-y-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
           <div>
             <div className="flex items-baseline gap-2">

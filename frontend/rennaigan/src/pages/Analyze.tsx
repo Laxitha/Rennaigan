@@ -8,7 +8,7 @@ import { bytes } from '@/lib/format'
 import { analyzeFile, useBackendUrl } from '@/services/backend'
 import { ErrorState, GlassBadge, GlassButton, GlassPanel, GlassUploader, useToast } from '@/components/glass'
 import { Pipeline, type PipelineStep, type StepState } from '@/components/forensic/Pipeline'
-import { MediaGlyph } from '@/components/forensic/meta'
+import { MediaGlyph, VERDICT_META, VerdictBadge } from '@/components/forensic/meta'
 import { PageHeader } from '@/components/navigation/PageHeader'
 import type { CaseFull, MediaType } from '@/types'
 
@@ -221,11 +221,17 @@ export default function Analyze() {
                       </p>
                       <span className="t-mono text-sm text-fg-3">/ 100 Trust Score</span>
                     </div>
-                    <h2 id="result-title" className="mt-2 text-xl font-[540] tracking-[-0.02em]">
-                      Verdict: {realCase.label}
+                    <h2 id="result-title" className="mt-3 flex flex-wrap items-center gap-3 text-xl font-[540] tracking-[-0.02em]">
+                      Verdict: {realCase.verdict ? VERDICT_META[realCase.verdict.verdict].label : realCase.label}
+                      {realCase.verdict && <VerdictBadge verdict={realCase.verdict} />}
                     </h2>
                     <p className="t-body mt-2 text-sm text-fg-2">
-                      {realCase.label_reason || `${realCase.total_findings} findings detected across applicable modules.`}
+                      {realCase.assessment?.explanation || realCase.verdict?.headline || realCase.label_reason}
+                    </p>
+                    <p className="t-meta mt-2">
+                      {realCase.verdict?.source === 'claude'
+                        ? `Reasoned from the detector findings by ${realCase.assessment?.model}. Detector result: ${realCase.label}.`
+                        : `Rule-based verdict from the fused detector scores (${realCase.label}).`}
                     </p>
                   </div>
 

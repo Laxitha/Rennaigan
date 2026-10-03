@@ -253,3 +253,56 @@ def test_fusion_detector_with_nothing_to_examine_is_not_clean_evidence(cfg):
         for m, n in (("sbi_video", "no_face_detected"), ("lipforensics", "no_mouth_track"), ("syncnet", "no_face_track"))]}
     out = fuse({"video": no_face}, ["video"], "public", cfg)
     assert out["module_coverage"]["video"] == 0 and out["trust_score"] is None
+
+
+# ------------------------------------------------------------------ verdict
+
+def test_fusion_verdict_levels(cfg):
+    from backend.assess import fusion_verdict
+    real = fusion_verdict({"trust_score": 95.0, "evidence_weight": 1.0, "label": "Low risk", "label_reason": ""}, cfg)
+    fake = fusion_verdict({"trust_score": 30.0, "evidence_weight": 1.0, "label": "High manipulation indicators", "label_reason": ""}, cfg)
+    thin = fusion_verdict({"trust_score": 90.0, "evidence_weight": 0.2, "label": "Inconclusive", "label_reason": ""}, cfg)
+    assert (real["verdict"], real["confidence"]) == ("real", 95)
+    assert (fake["verdict"], fake["confidence"]) == ("deepfake", 70)
+    assert thin["verdict"] == "uncertain" and thin["confidence"] <= 50
+
+
+def test_case_without_api_key_uses_fusion_verdict(client, samples, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    case = upload(client, samples / "photo.jpg").json()
+    assert case["verdict"]["source"] == "fusion" and case["assessment"] is None
+    assert client.get("/health").json()["assessment"]["enabled"] is False
+    assert client.post(f"/cases/{case['id']}/assess").status_code == 503
+    assert client.get("/cases").json()["cases"][0]["verdict"]["verdict"] == case["verdict"]["verdict"]
+
+
+def test_claude_assessment_is_recorded_and_sealed(client, samples, monkeypatch):
+    from backend import assess
+    seen = {}
+
+    async def fake_assess(doc, earlier, model):
+        seen["evidence"] = assess.build_evidence(doc, earlier)
+        return {"verdict": "deepfake", "confidence": 71, "headline": "Voice detector flags synthetic speech.",
+                "explanation": "e", "evidence": [], "caveats": [], "recommendation": "r", "model": model,
+                "generated_at": "t", "similar_cases_used": [], "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+    monkeypatch.setattr(assess, "available", lambda: True)
+    monkeypatch.setattr(assess, "assess", fake_assess)
+    case = upload(client, samples / "voice.wav").json()
+    assert case["verdict"] == {"verdict": "deepfake", "confidence": 71, "source": "claude", "headline": "Voice detector flags synthetic speech."}
+    assert case["fusion_verdict"]["source"] == "fusion"
+    assert "assessment.generated" in [e["action"] for e in case["audit"]]
+    assert any("ASVspoof" in note for note in seen["evidence"]["detector_reference_notes"]) is False  # audio detector did not run here
+    assert any("ffprobe" in note for note in seen["evidence"]["detector_reference_notes"])
+    assert client.get(f"/cases/{case['id']}/audit/verify").json()["intact"]
+
+    again = client.post(f"/cases/{case['id']}/assess").json()
+    assert [e["action"] for e in again["audit"]][-2:] == ["assessment.generated", "case.sealed"]
+    assert client.get(f"/cases/{case['id']}/audit/verify").json()["intact"]
+
+    async def failing(doc, earlier, model):
+        raise RuntimeError("rate limited")
+    monkeypatch.setattr(assess, "assess", failing)
+    failed = upload(client, samples / "photo.jpg").json()
+    assert failed["verdict"]["source"] == "fusion" and "rate limited" in failed["assessment_error"]

@@ -96,3 +96,11 @@ services:
   audio:    {url: "http://127.0.0.1:8003"}
   metadata: {url: "http://127.0.0.1:8004"}
   motion:   {url: "http://127.0.0.1:8005"}
+
+# Reasoned verdict (real / deepfake / uncertain) written by Claude from the detector findings,
+# detector reference notes and similar earlier cases. Only findings are sent, never the media.
+# Used when ANTHROPIC_API_KEY is set where the gateway runs; otherwise the rule-based verdict stands.
+assessment:
+  enabled: true
+  model: claude-opus-5-5
+  timeout_s: 120

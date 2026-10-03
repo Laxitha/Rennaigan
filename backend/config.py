@@ -47,6 +47,8 @@ DEFAULTS = {
         "metadata": {"url": "http://127.0.0.1:8004"},
         "motion": {"url": "http://127.0.0.1:8005"},
     },
+    # Reasoned verdict written by Claude from the detector findings. Needs ANTHROPIC_API_KEY.
+    "assessment": {"enabled": True, "model": "claude-opus-5-5", "timeout_s": 120},
     "preprocessing": {"max_upload_mb": 100},
     "thresholds": {},
     "temperatures": {},

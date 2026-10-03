@@ -111,6 +111,30 @@ export interface CaseFile {
   media_url: string | null
 }
 
+export type VerdictKind = 'real' | 'deepfake' | 'uncertain'
+
+/** The final call on a file. `claude` when the reasoned assessment ran, `fusion` otherwise. */
+export interface Verdict {
+  verdict: VerdictKind
+  /** 0-100: how likely the verdict is correct given the evidence gathered. */
+  confidence: number
+  source: 'claude' | 'fusion'
+  headline: string
+}
+
+export interface Assessment {
+  verdict: VerdictKind
+  confidence: number
+  headline: string
+  explanation: string
+  evidence: Array<{ detector: string; observation: string; direction: 'points_to_manipulation' | 'points_to_authentic' | 'neutral' }>
+  caveats: string[]
+  recommendation: string
+  model: string
+  generated_at: string
+  similar_cases_used: string[]
+}
+
 export interface CaseSummary {
   id: string
   created_at: string
@@ -127,6 +151,7 @@ export interface CaseSummary {
   runtime_s: number
   review: Review | null
   modules: Record<string, ModuleInfo>
+  verdict?: Verdict | null
 }
 
 export interface CaseFull extends CaseSummary {
@@ -136,6 +161,9 @@ export interface CaseFull extends CaseSummary {
   artifacts: Artifact[]
   audit: AuditEntry[]
   gateway_version: string
+  fusion_verdict?: Verdict | null
+  assessment?: Assessment | null
+  assessment_error?: string | null
 }
 
 export interface ServiceHealth {

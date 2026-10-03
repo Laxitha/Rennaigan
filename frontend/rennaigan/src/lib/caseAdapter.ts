@@ -27,6 +27,7 @@ export function caseToInvestigation(c: CaseSummary | CaseFull): Investigation {
   const indicators: Level = trust < 45 ? 'high' : trust < 75 ? 'moderate' : 'low'
 
   const findingDesc =
+    c.verdict?.headline ??
     c.label_reason ??
     (c.total_findings > 0
       ? `${c.total_findings} findings detected (${c.label})`

@@ -1,7 +1,7 @@
 import { DeviceMobile, FilmStrip, Image as ImageIcon, Waveform } from '@phosphor-icons/react'
 import { GlassBadge } from '@/components/glass'
 import { cn } from '@/lib/cn'
-import type { BulkStatus, CaseStatus, Consistency, Level, MediaType, Severity, Tone } from '@/types'
+import type { BulkStatus, CaseStatus, Consistency, Level, MediaType, Severity, Tone, Verdict, VerdictKind } from '@/types'
 
 export const STATUS_META: Record<CaseStatus, { label: string; tone: Tone }> = {
   active: { label: 'Active', tone: 'accent' },
@@ -61,4 +61,18 @@ export function CoverageBar({ value, className }: { value: number; className?: s
       <span className="t-mono text-fg-2">{value}%</span>
     </span>
   )
+}
+
+export const VERDICT_META: Record<VerdictKind, { label: string; tone: Tone }> = {
+  real: { label: 'Real', tone: 'ok' },
+  deepfake: { label: 'Deepfake', tone: 'danger' },
+  uncertain: { label: 'Uncertain', tone: 'warn' },
+}
+
+/** The final call on a file with its confidence, e.g. "Deepfake · 82% confidence". */
+export function VerdictBadge({ verdict, className }: { verdict: Verdict; className?: string }) {
+  const meta = VERDICT_META[verdict.verdict]
+  // An "uncertain" call has no meaningful confidence to show.
+  const detail = verdict.verdict === 'uncertain' ? '' : ` · ${verdict.confidence}% confidence`
+  return <GlassBadge tone={meta.tone} className={className}>{meta.label}{detail}</GlassBadge>
 }
