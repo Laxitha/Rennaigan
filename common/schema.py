@@ -19,3 +19,6 @@ class ModuleResult(BaseModel):
     artifacts: dict[str, str] = {}
     weights_sha256: dict[str, str] = {}
     runtime_s: float
+    # Seconds spent in each detector, and what part of a long file was examined.
+    timings: dict[str, float] = {}
+    note: str = ""

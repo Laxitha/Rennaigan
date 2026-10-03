@@ -133,6 +133,8 @@ export interface Assessment {
   model: string
   generated_at: string
   similar_cases_used: string[]
+  /** Number of images (the file, or video frames) the model looked at. 0 when only findings were sent. */
+  media_reviewed?: number
 }
 
 export interface CaseSummary {

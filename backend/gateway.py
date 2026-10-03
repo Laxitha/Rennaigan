@@ -39,12 +39,23 @@ LOCAL_ORIGIN = r"^https?://(localhost|127\.\d+\.\d+\.\d+|\[::1\]|10\.\d+\.\d+\.\
 SUMMARY_KEYS = ("id", "created_at", "mode", "batch_id", "file", "media", "trust_score", "label", "label_reason",
                 "evidence_weight", "module_scores", "total_findings", "runtime_s", "review", "modules", "verdict")
 MAX_ARTIFACT_BYTES = 50 * 1024 * 1024
+CHUNK_BYTES = 32 * 1024 * 1024
 
 
 class ReviewBody(BaseModel):
     decision: Literal["confirm", "reject", "inconclusive"]
     note: str = Field(default="", max_length=4000)
     analyst: str = Field(default="analyst", min_length=1, max_length=120)
+
+
+class UploadStart(BaseModel):
+    name: str = Field(min_length=1, max_length=300)
+    size: int
+
+
+class UploadFinish(BaseModel):
+    mode: Literal["public", "identity"] = "public"
+    batch_id: str | None = None
 
 
 class RagQuery(BaseModel):
@@ -62,6 +73,7 @@ def create_app(cfg: dict | None = None) -> FastAPI:
     max_bytes = int(cfg["preprocessing"]["max_upload_mb"]) * 1024 * 1024
     urls = {m: cfg["services"][m]["url"].rstrip("/") for m in config.MODULES}
     assessment_cfg = cfg["assessment"]
+    uploads: dict[str, dict] = {}
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -84,7 +96,7 @@ def create_app(cfg: dict | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=origins,
         allow_origin_regex=".*" if "*" in origins else LOCAL_ORIGIN,
-        allow_methods=["GET", "POST", "DELETE"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],
         expose_headers=["Content-Disposition"],
     )
@@ -171,7 +183,9 @@ def create_app(cfg: dict | None = None) -> FastAPI:
 
     async def ingest(upload: UploadFile) -> tuple:
         """Validate and store an upload. Every rejection (type, size, undecodable) happens here."""
-        tmp, name, sha, size = await receive(upload)
+        return await probe_received(*(await receive(upload)))
+
+    async def probe_received(tmp: Path, name: str, sha: str, size: int) -> tuple:
         try:
             info = await asyncio.to_thread(media.probe, tmp, name)
         except media.UnsupportedMedia as exc:
@@ -274,7 +288,12 @@ def create_app(cfg: dict | None = None) -> FastAPI:
         t0 = time.monotonic()
         earlier = [c for c in st.list_cases(200)[1] if c["id"] != doc["id"]]
         try:
-            result = await asyncio.wait_for(assess.assess(doc, earlier, assessment_cfg["model"]), timeout=float(assessment_cfg["timeout_s"]))
+            images = []
+            if assessment_cfg["send_media"]:
+                source = cases_dir / doc["id"] / "media" / doc["file"]["name"]
+                if source.is_file():
+                    images = await asyncio.to_thread(media.preview_images, source, doc["media"])
+            result = await asyncio.wait_for(assess.assess(doc, earlier, assessment_cfg["model"], images), timeout=float(assessment_cfg["timeout_s"]))
         except Exception as exc:
             doc["assessment_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
             st.append_audit(doc["id"], "assessment.failed", doc["assessment_error"], actor=assessment_cfg["model"],
@@ -306,7 +325,8 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             "tools": {t: shutil.which(t) is not None for t in ("ffmpeg", "ffprobe", "exiftool", "c2patool")},
             "gateway": {"version": __version__, "cases": store().count_cases(), "keep_media": bool(gw["keep_media"])},
             "rag": {"enabled": True, "retriever": rag.RETRIEVER},
-            "assessment": {"enabled": bool(assessment_cfg["enabled"] and assess.available()), "model": assessment_cfg["model"]},
+            "assessment": {"enabled": bool(assessment_cfg["enabled"] and assess.available()), "model": assessment_cfg["model"],
+                           "send_media": bool(assessment_cfg["send_media"])},
         }
 
     @app.get("/info")
@@ -331,7 +351,9 @@ def create_app(cfg: dict | None = None) -> FastAPI:
                       batch_id: str | None = Form(None)):
         if batch_id is not None and not BATCH_ID.match(batch_id):
             raise HTTPException(422, "batch_id must look like BT-<12 hex characters>.")
-        ingested = await ingest(file)
+        return stream_case(await ingest(file), mode, batch_id)
+
+    def stream_case(ingested: tuple, mode: str, batch_id: str | None) -> StreamingResponse:
         task = asyncio.create_task(run_case(ingested, mode, batch_id))
 
         async def body():
@@ -345,6 +367,61 @@ def create_app(cfg: dict | None = None) -> FastAPI:
                 yield json.dumps({"detail": f"Analysis failed: {type(exc).__name__}: {exc}"}).encode()
 
         return StreamingResponse(body(), media_type="application/json")
+
+    # Large files arrive in pieces: tunnels and proxies commonly cap one request body at 100 MB.
+
+    @app.post("/uploads")
+    async def start_upload(body: UploadStart):
+        name = media.safe_name(body.name)
+        ext = Path(name).suffix.lower().lstrip(".")
+        if ext not in media.ALLOWED_EXT:
+            raise HTTPException(415, f"Files of type .{ext or '?'} are not supported.")
+        if body.size > max_bytes:
+            raise HTTPException(413, f"File is larger than the {max_bytes // (1024 * 1024)} MB limit.")
+        if body.size <= 0:
+            raise HTTPException(422, "The uploaded file is empty.")
+        for stale_id, stale in list(uploads.items()):  # abandoned uploads
+            if time.monotonic() - stale["touched"] > 3600:
+                stale["path"].unlink(missing_ok=True)
+                uploads.pop(stale_id, None)
+        upload_id = secrets.token_hex(12)
+        uploads[upload_id] = {"name": name, "size": body.size, "received": 0, "next": 0, "sha": hashlib.sha256(),
+                              "path": tmp_dir / f"{upload_id}.{ext}", "touched": time.monotonic()}
+        return {"upload_id": upload_id, "chunk_bytes": CHUNK_BYTES}
+
+    @app.put("/uploads/{upload_id}/{index}")
+    async def upload_chunk(upload_id: str, index: int, request: Request):
+        up = uploads.get(upload_id)
+        if up is None:
+            raise HTTPException(404, "Unknown or expired upload.")
+        if index == up["next"] - 1:  # a retry of the chunk already stored
+            return {"received": up["received"]}
+        if index != up["next"]:
+            raise HTTPException(409, f"Expected chunk {up['next']}.")
+        size = 0
+        with open(up["path"], "ab") as out:
+            async for piece in request.stream():
+                size += len(piece)
+                if size > CHUNK_BYTES or up["received"] + size > up["size"]:
+                    out.truncate(up["received"])
+                    raise HTTPException(413, "Chunk is larger than announced.")
+                up["sha"].update(piece)
+                out.write(piece)
+        up.update(received=up["received"] + size, next=index + 1, touched=time.monotonic())
+        return {"received": up["received"]}
+
+    @app.post("/uploads/{upload_id}/analyze")
+    async def analyze_upload_id(upload_id: str, body: UploadFinish):
+        up = uploads.pop(upload_id, None)
+        if up is None:
+            raise HTTPException(404, "Unknown or expired upload.")
+        if up["received"] != up["size"]:
+            up["path"].unlink(missing_ok=True)
+            raise HTTPException(422, f"Upload is incomplete: {up['received']} of {up['size']} bytes received.")
+        if body.batch_id is not None and not BATCH_ID.match(body.batch_id):
+            raise HTTPException(422, "batch_id must look like BT-<12 hex characters>.")
+        ingested = await probe_received(up["path"], up["name"], up["sha"].hexdigest(), up["size"])
+        return stream_case(ingested, body.mode, body.batch_id)
 
     @app.post("/bulk")
     async def bulk(files: list[UploadFile] = File(...), mode: Literal["public", "identity"] = Form("public")):

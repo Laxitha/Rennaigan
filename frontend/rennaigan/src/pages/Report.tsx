@@ -180,7 +180,7 @@ export default function Report() {
             )}
             <p className="t-meta mt-4">
               {caseFull.verdict.source === 'claude'
-                ? `Written by ${caseFull.assessment?.model} from the detector findings, detector reference notes and ${caseFull.assessment?.similar_cases_used.length ?? 0} similar earlier cases. The model did not see the media. Rule-based verdict from the scores alone: ${VERDICT_META[caseFull.fusion_verdict?.verdict ?? caseFull.verdict.verdict].label}.`
+                ? `Written by ${caseFull.assessment?.model} from the detector findings, detector reference notes and ${caseFull.assessment?.similar_cases_used.length ?? 0} similar earlier cases. ${caseFull.assessment?.media_reviewed ? 'It also reviewed the media visually.' : 'The model did not see the media.'} Rule-based verdict from the scores alone: ${VERDICT_META[caseFull.fusion_verdict?.verdict ?? caseFull.verdict.verdict].label}.`
                 : caseFull.assessment_error
                   ? `Rule-based verdict from the fused detector scores. The reasoned assessment failed: ${caseFull.assessment_error}`
                   : 'Rule-based verdict from the fused detector scores. Add an Anthropic API key on the gateway for a reasoned assessment.'}

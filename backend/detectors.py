@@ -119,12 +119,15 @@ async def run_module(client: httpx.AsyncClient, module: str, url: str, path: Pat
         status = "ok"
         signals = sum(1 for f in findings if f["kind"] == "signal")
         detail = f"{signals} signal{'s' if signals != 1 else ''}, {len(findings)} finding{'s' if len(findings) != 1 else ''} ({via})"
+    if raw.get("note"):
+        detail = f"{detail}. {raw['note']}"
 
     return {
         "info": {
             "status": status, "detail": detail, "url": url, "elapsed_s": round(time.monotonic() - t0, 3),
             "runtime_s": raw.get("runtime_s"), "file_sha256": raw.get("file_sha256"),
             "weights_sha256": raw.get("weights_sha256") or {}, "findings_count": len(usable),
+            "detector_runtime_s": raw.get("timings") or {}, "note": raw.get("note") or None,
         },
         "findings": findings,
         "artifacts": raw.get("artifacts") or {},

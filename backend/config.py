@@ -14,7 +14,7 @@ MODULES = ["image", "video", "audio", "metadata", "motion"]
 
 MODULE_DETECTORS = {
     "image": ["sbi", "univfd", "trufor"],
-    "video": ["sbi_video", "lipforensics", "syncnet"],
+    "video": ["sbi_video", "univfd_video", "lipforensics", "syncnet"],
     "audio": ["ssl_aasist", "ecapa"],
     "metadata": ["exiftool", "ffprobe", "c2patool"],
     "motion": ["optical_flow", "head_pose", "smoothness", "identity_drift", "blink"],
@@ -48,8 +48,8 @@ DEFAULTS = {
         "motion": {"url": "http://127.0.0.1:8005"},
     },
     # Reasoned verdict written by Claude from the detector findings. Needs ANTHROPIC_API_KEY.
-    "assessment": {"enabled": True, "model": "claude-opus-5-5", "timeout_s": 120},
-    "preprocessing": {"max_upload_mb": 100},
+    "assessment": {"enabled": True, "model": "claude-opus-5-5", "timeout_s": 180, "send_media": False},
+    "preprocessing": {"max_upload_mb": 1024},
     "thresholds": {},
     "temperatures": {},
     "module_weights": {
@@ -94,6 +94,8 @@ def load(path: Path | None = None) -> dict:
         cfg["gateway"]["data_dir"] = env["RENNAIGAN_DATA_DIR"]
     if env.get("RENNAIGAN_PORT"):
         cfg["gateway"]["port"] = int(env["RENNAIGAN_PORT"])
+    if env.get("RENNAIGAN_ASSESS_SEND_MEDIA"):
+        cfg["assessment"]["send_media"] = env["RENNAIGAN_ASSESS_SEND_MEDIA"].lower() in ("1", "true", "yes")
     if env.get("RENNAIGAN_CORS_ORIGINS"):
         cfg["gateway"]["cors_origins"] = [o.strip() for o in env["RENNAIGAN_CORS_ORIGINS"].split(",") if o.strip()]
 

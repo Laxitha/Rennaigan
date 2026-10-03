@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import mimetypes
 import re
@@ -253,3 +254,28 @@ def zip_frames(result: dict, frames_root: Path, dest: Path) -> Path:
         listing = [{k: f[k] for k in ("index", "frame_number", "timestamp_s", "timecode", "sharpness", "faces_count")} for f in result["frames"]]
         zf.writestr("manifest.json", json.dumps({**result, "frames": listing}, indent=2))
     return dest
+
+
+def preview_images(path: Path, info: dict, frames: int = 4, max_side: int = 1280) -> list[bytes]:
+    """JPEG previews for a visual review: the image itself, or frames spread across a video."""
+    out: list[bytes] = []
+    try:
+        if info["media_type"] in ("image", "screenshot"):
+            with Image.open(path) as img:
+                img = img.convert("RGB")
+                img.thumbnail((max_side, max_side))
+                buf = io.BytesIO()
+                img.save(buf, "JPEG", quality=90)
+                out.append(buf.getvalue())
+        elif info["media_type"] == "video" and info.get("duration_s"):
+            for k in range(frames):
+                at = info["duration_s"] * (2 * k + 1) / (2 * frames)
+                shot = subprocess.run(
+                    ["ffmpeg", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", str(path), "-frames:v", "1",
+                     "-vf", f"scale='min({max_side},iw)':-2", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "3", "-"],
+                    capture_output=True, timeout=60)
+                if shot.returncode == 0 and shot.stdout:
+                    out.append(shot.stdout)
+    except Exception:
+        return []
+    return out

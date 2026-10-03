@@ -63,7 +63,9 @@ MODEL = None
 DEVICE = None
 
 SAMPLE_RATE = 16000
-MAX_SECONDS = 300
+MAX_SECONDS = 900
+MAX_WINDOWS = 150
+BATCH_SIZE = 8
 WINDOW_SAMPLES = 64600  # ~4.04s, matches repo's cut length
 STRIDE_SAMPLES = SAMPLE_RATE * 2  # 2s stride (50% overlap)
 MIN_SPEECH_RATIO = 0.5
@@ -192,44 +194,65 @@ def analyze(file_path: Path, audio_path: Path | None = None) -> ModuleResult:
     except Exception:
         has_vad = False
 
+    # Window positions. Long recordings widen the stride so the work stays bounded.
+    stride = max(STRIDE_SAMPLES, len(audio) // MAX_WINDOWS)
+    positions = list(range(0, max(len(audio) - WINDOW_SAMPLES // 2, 1), stride))
+
     findings: list[Finding] = []
-    pos = 0
+    pending: list[tuple[int, np.ndarray]] = []
 
-    while pos < len(audio):
-        end = pos + WINDOW_SAMPLES
-        chunk = audio[pos:end]
+    def flush():
+        """Score the queued speech windows in one batch."""
+        if not pending:
+            return
+        batch = torch.from_numpy(np.stack([c for _, c in pending])).float().to(DEVICE)
+        with torch.no_grad():
+            probs = torch.softmax(model(batch), dim=-1)[:, SPOOF_INDEX].cpu().tolist()
+        for (pos, _), score in zip(pending, probs):
+            findings.append(Finding(
+                model="ssl_aasist", score=float(score),
+                start=pos / SAMPLE_RATE, end=min(pos + WINDOW_SAMPLES, len(audio)) / SAMPLE_RATE,
+                note="synthetic_speech_detected" if score > THRESHOLD else "speech_appears_genuine",
+            ))
+        pending.clear()
 
+    for pos in positions:
+        chunk = audio[pos:pos + WINDOW_SAMPLES]
         if len(chunk) < WINDOW_SAMPLES:
             chunk = pad_audio(chunk, WINDOW_SAMPLES)
-
-        start_sec = pos / SAMPLE_RATE
-        end_sec = min(end, len(audio)) / SAMPLE_RATE
-
-        # Skip non-speech windows
         if has_vad:
             speech_ratio = get_speech_ratio(chunk, SAMPLE_RATE)
             if speech_ratio < MIN_SPEECH_RATIO:
                 findings.append(Finding(
-                    model="ssl_aasist",
-                    score=0.0,
-                    start=start_sec,
-                    end=end_sec,
+                    model="ssl_aasist", score=0.0,
+                    start=pos / SAMPLE_RATE, end=min(pos + WINDOW_SAMPLES, len(audio)) / SAMPLE_RATE,
                     note=f"no_speech (ratio={speech_ratio:.2f})",
                 ))
-                pos += STRIDE_SAMPLES
                 continue
+        pending.append((pos, chunk))
+        if len(pending) == BATCH_SIZE:
+            flush()
+    flush()
+    findings.sort(key=lambda f: f.start)
 
-        score = score_chunk(model, chunk)
-
+    scored = [f for f in findings if not f.note.startswith("no_speech")]
+    if scored:
+        run: list[Finding] = []
+        for f in scored + [None]:
+            if f is not None and f.score >= 0.8:
+                run.append(f)
+                continue
+            if len(run) >= 2:
+                findings.append(Finding(model="ssl_aasist", score=float(np.mean([r.score for r in run])), start=run[0].start,
+                                        end=run[-1].end, note=f"synthetic_speech_interval: {len(run)} consecutive windows flagged"))
+            run = []
+        values = [f.score for f in scored]
         findings.append(Finding(
-            model="ssl_aasist",
-            score=score,
-            start=start_sec,
-            end=end_sec,
-            note="synthetic_speech_detected" if score > THRESHOLD else "speech_appears_genuine",
+            model="ssl_aasist", score=float(np.median(values)),
+            note=f"clip_level: median over {len(values)} speech windows, {sum(v > THRESHOLD for v in values) / len(values):.0%} flagged",
         ))
-
-        pos += STRIDE_SAMPLES
+    else:
+        findings.append(Finding(model="ssl_aasist", score=0.0, note="no_speech: no window contained enough speech to score"))
 
     # Save spectrogram artifact
     spectrogram_path = str(file_path.with_suffix(".spectrogram.png"))

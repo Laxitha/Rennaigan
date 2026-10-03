@@ -27,6 +27,12 @@ DETECTORS = {
         "heavy filters and very low resolution images are outside its training distribution and can score high "
         "or low unpredictably."
     ),
+    "univfd_video": (
+        "UnivFD applied to up to 16 frames spread across the video; the score is the median. This is the only "
+        "check for video that was generated outright rather than face-swapped. Video compression removes "
+        "part of the signal, so it is weaker than on still images: a high median with most frames above 0.5 "
+        "is meaningful, a median near 0.5 is not."
+    ),
     "trufor": (
         "TruFor: fuses RGB with a learned camera-noise fingerprint (Noiseprint++). Score is the image-level "
         "probability of local manipulation (splicing, copy-move, inpainting); its heatmap localizes the region. "

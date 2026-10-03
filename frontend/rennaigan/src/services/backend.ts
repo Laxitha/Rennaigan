@@ -220,8 +220,51 @@ export interface AnalyzeOptions {
   timeoutMs?: number
 }
 
+/** Files above this size go up in chunks: tunnels and proxies commonly cap one request at 100 MB. */
+const CHUNKED_ABOVE = 48 * 1024 * 1024
+
+function parseCase(status: number, text: string, what: string): CaseFull {
+  let body: unknown
+  try { body = JSON.parse(text) } catch { throw new BackendError('invalid', `${what} did not return a case`, status, text) }
+  const c = body as Partial<CaseFull> & { detail?: string }
+  if (!c || typeof c.id !== 'string' || !Array.isArray(c.findings)) {
+    throw new BackendError(typeof c?.detail === 'string' ? 'http' : 'invalid', typeof c?.detail === 'string' ? c.detail : `${what} did not return a case`, status, text)
+  }
+  return c as CaseFull
+}
+
+/** POST /uploads, PUT each chunk, then POST /uploads/:id/analyze. A failed chunk is retried twice. */
+async function analyzeFileChunked(url: string, file: File, opts: AnalyzeOptions): Promise<CaseFull> {
+  const call = async (path: string, init: RequestInit, what: string) => {
+    let res: Response
+    try { res = await fetch(`${url}${path}`, { ...init, signal: opts.signal }) } catch (e) {
+      if (opts.signal?.aborted) throw new BackendError('aborted', 'Analysis cancelled')
+      throw new BackendError('unreachable', `Network error contacting ${hostOf(url)}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+    const text = await res.text()
+    if (!res.ok) throw new BackendError('http', `${what} returned ${res.status}`, res.status, text)
+    return text
+  }
+  const json = { 'Content-Type': 'application/json', Accept: 'application/json' }
+  const start = JSON.parse(await call('/uploads', { method: 'POST', headers: json, body: JSON.stringify({ name: file.name, size: file.size }) }, 'POST /uploads')) as { upload_id: string; chunk_bytes: number }
+  const total = Math.ceil(file.size / start.chunk_bytes)
+  for (let i = 0; i < total; i++) {
+    const chunk = file.slice(i * start.chunk_bytes, (i + 1) * start.chunk_bytes)
+    for (let attempt = 0; ; attempt++) {
+      try { await call(`/uploads/${start.upload_id}/${i}`, { method: 'PUT', body: chunk }, `Upload of part ${i + 1}`); break } catch (e) {
+        if (attempt >= 2 || !(e instanceof BackendError) || e.kind !== 'unreachable') throw e
+      }
+    }
+    opts.onUploadProgress?.(Math.min((i + 1) * start.chunk_bytes, file.size), file.size)
+  }
+  opts.onUploaded?.()
+  const text = await call(`/uploads/${start.upload_id}/analyze`, { method: 'POST', headers: json, body: JSON.stringify({ mode: opts.mode ?? 'public', batch_id: opts.batchId ?? null }) }, 'POST /analyze')
+  return parseCase(200, text, 'POST /analyze')
+}
+
 /** POST /analyze with the file as multipart field "file". XHR is used for upload progress. */
 export function analyzeFile(url: string, file: File, opts: AnalyzeOptions = {}): Promise<CaseFull> {
+  if (file.size > CHUNKED_ABOVE) return analyzeFileChunked(url, file, opts)
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     const form = new FormData()
@@ -235,11 +278,7 @@ export function analyzeFile(url: string, file: File, opts: AnalyzeOptions = {}):
     xhr.upload.onload = () => opts.onUploaded?.()
     xhr.onload = () => {
       if (xhr.status < 200 || xhr.status >= 300) { reject(new BackendError('http', `POST /analyze returned ${xhr.status}`, xhr.status, xhr.responseText)); return }
-      try {
-        const body = JSON.parse(xhr.responseText)
-        if (!body || typeof body.id !== 'string' || !Array.isArray(body.findings)) throw new Error('missing fields')
-        resolve(body as CaseFull)
-      } catch { reject(new BackendError('invalid', 'POST /analyze did not return a case', xhr.status, xhr.responseText)) }
+      try { resolve(parseCase(xhr.status, xhr.responseText, 'POST /analyze')) } catch (e) { reject(e) }
     }
     xhr.onerror = () => reject(new BackendError('unreachable', `Network error contacting ${hostOf(url)}`))
     xhr.ontimeout = () => reject(new BackendError('timeout', `POST /analyze timed out after ${Math.round(xhr.timeout / 1000)} s`))

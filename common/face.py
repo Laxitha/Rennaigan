@@ -5,6 +5,7 @@ Provides detection boxes, 5-point landmarks, and 512-d ArcFace embeddings.
 
 from __future__ import annotations
 
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -33,19 +34,21 @@ def get_face_app():
 YUNET_PATH = Path("weights/face_detection_yunet_2023mar.onnx")
 YUNET_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 YUNET = None
+YUNET_LOCK = threading.Lock()
 
 
 def detect_faces_yunet(image: np.ndarray, det_thresh: float = 0.6) -> list[dict]:
     """OpenCV YuNet face boxes. No identity embedding."""
     global YUNET
-    if YUNET is None:
-        if not YUNET_PATH.exists():
-            YUNET_PATH.parent.mkdir(parents=True, exist_ok=True)
-            urllib.request.urlretrieve(YUNET_URL, YUNET_PATH)
-        YUNET = cv2.FaceDetectorYN.create(str(YUNET_PATH), "", (320, 320), det_thresh, 0.3, 50)
     h, w = image.shape[:2]
-    YUNET.setInputSize((w, h))
-    _, found = YUNET.detect(image)
+    with YUNET_LOCK:  # one detector object, set to the image size before each call
+        if YUNET is None:
+            if not YUNET_PATH.exists():
+                YUNET_PATH.parent.mkdir(parents=True, exist_ok=True)
+                urllib.request.urlretrieve(YUNET_URL, YUNET_PATH)
+            YUNET = cv2.FaceDetectorYN.create(str(YUNET_PATH), "", (320, 320), det_thresh, 0.3, 50)
+        YUNET.setInputSize((w, h))
+        _, found = YUNET.detect(image)
     results = []
     for row in found if found is not None else []:
         x, y, bw, bh = (int(v) for v in row[:4])

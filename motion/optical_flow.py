@@ -70,94 +70,62 @@ def compute_flow(frame1: np.ndarray, frame2: np.ndarray) -> np.ndarray:
     return flow
 
 
-def analyze_flow_consistency(
-    frames: list[np.ndarray],
-    face_boxes: list[list[int] | None],
-) -> list[Finding]:
-    """Compare face-region flow vs background-ring flow across frames."""
-    if len(frames) < 2:
-        return []
+def flow_residual(frame1: np.ndarray, frame2: np.ndarray, box: list[int]) -> float | None:
+    """Median flow inside the face box minus the median in the ring around it."""
+    flow = compute_flow(frame1, frame2)
+    h, w = flow.shape[:2]
 
-    residuals = []
-    timestamps = []
+    x, y, fw, fh = box
+    sx, sy = w / frame1.shape[1], h / frame1.shape[0]
+    fx1, fy1 = int(x * sx), int(y * sy)
+    fx2, fy2 = int((x + fw) * sx), int((y + fh) * sy)
 
-    for i in range(len(frames) - 1):
-        if face_boxes[i] is None or face_boxes[i + 1] is None:
-            continue
+    cx, cy = (fx1 + fx2) / 2, (fy1 + fy2) / 2
+    rw, rh = (fx2 - fx1) * RING_SCALE, (fy2 - fy1) * RING_SCALE
+    rx1, ry1 = max(0, int(cx - rw / 2)), max(0, int(cy - rh / 2))
+    rx2, ry2 = min(w, int(cx + rw / 2)), min(h, int(cy + rh / 2))
 
-        flow = compute_flow(frames[i], frames[i + 1])
-        h, w = flow.shape[:2]
+    face_mask = np.zeros((h, w), dtype=bool)
+    face_mask[max(fy1, 0):fy2, max(fx1, 0):fx2] = True
+    ring_mask = np.zeros((h, w), dtype=bool)
+    ring_mask[ry1:ry2, rx1:rx2] = True
+    ring_mask[face_mask] = False
+    if face_mask.sum() < 10 or ring_mask.sum() < 10:
+        return None
 
-        x, y, fw, fh = face_boxes[i]
-        # Scale box coords to flow dimensions
-        sx = w / frames[i].shape[1]
-        sy = h / frames[i].shape[0]
-        fx1, fy1 = int(x * sx), int(y * sy)
-        fx2, fy2 = int((x + fw) * sx), int((y + fh) * sy)
+    flow_mag = np.linalg.norm(flow, axis=-1)
+    return float(np.median(flow_mag[face_mask]) - np.median(flow_mag[ring_mask]))
 
-        # Ring region (1.6x)
-        cx, cy = (fx1 + fx2) / 2, (fy1 + fy2) / 2
-        rw, rh = (fx2 - fx1) * RING_SCALE, (fy2 - fy1) * RING_SCALE
-        rx1 = max(0, int(cx - rw / 2))
-        ry1 = max(0, int(cy - rh / 2))
-        rx2 = min(w, int(cx + rw / 2))
-        ry2 = min(h, int(cy + rh / 2))
 
-        face_mask = np.zeros((h, w), dtype=bool)
-        face_mask[fy1:fy2, fx1:fx2] = True
-        ring_mask = np.zeros((h, w), dtype=bool)
-        ring_mask[ry1:ry2, rx1:rx2] = True
-        ring_mask[face_mask] = False
+def analyze_flow_consistency(residuals: list[float], timestamps: list[float]) -> list[Finding]:
+    """Flag stretches where the face moves against its surroundings.
 
-        if face_mask.sum() < 10 or ring_mask.sum() < 10:
-            continue
-
-        flow_mag = np.linalg.norm(flow, axis=-1)
-        face_median = np.median(flow_mag[face_mask])
-        ring_median = np.median(flow_mag[ring_mask])
-        residuals.append(face_median - ring_median)
-        timestamps.append(i / FPS)
-
+    `residuals` are flow_residual() values for frame pairs taken at `timestamps` (seconds).
+    """
     if len(residuals) < 10:
         return []
 
-    residuals = np.array(residuals)
-    diffs = np.diff(residuals)
-    median_jitter = np.median(np.abs(diffs))
+    diffs = np.diff(np.array(residuals))
     mad = np.median(np.abs(diffs - np.median(diffs)))
     if mad < 1e-6:
         return []
-
     z_scores = np.abs(diffs - np.median(diffs)) / (mad * 1.4826)
 
     findings = []
     start = None
-    for j, z in enumerate(z_scores):
-        if z > JITTER_ZSCORE_THRESHOLD:
-            if start is None:
-                start = timestamps[j]
-        else:
-            if start is not None:
-                duration = timestamps[j] - start
-                if duration >= MIN_DURATION_SEC:
-                    findings.append(Finding(
-                        model="optical_flow",
-                        score=min(float(np.max(z_scores[timestamps.index(start):j + 1])) / 10.0, 1.0),
-                        start=start,
-                        end=timestamps[j],
-                        note="flow_inconsistency_face_vs_background",
-                    ))
-                start = None
-
-    if start is not None:
-        duration = timestamps[-1] - start
-        if duration >= MIN_DURATION_SEC:
-            findings.append(Finding(
-                model="optical_flow",
-                score=min(float(np.max(z_scores)) / 10.0, 1.0),
-                start=start,
-                end=timestamps[-1],
-                note="flow_inconsistency_face_vs_background",
-            ))
-
+    for j in range(len(z_scores) + 1):
+        high = j < len(z_scores) and z_scores[j] > JITTER_ZSCORE_THRESHOLD
+        if high and start is None:
+            start = j
+        elif not high and start is not None:
+            end = min(j, len(timestamps) - 1)
+            if timestamps[end] - timestamps[start] >= MIN_DURATION_SEC:
+                findings.append(Finding(
+                    model="optical_flow",
+                    score=min(float(np.max(z_scores[start:j])) / 10.0, 1.0),
+                    start=timestamps[start],
+                    end=timestamps[end],
+                    note="flow_inconsistency_face_vs_background",
+                ))
+            start = None
     return findings

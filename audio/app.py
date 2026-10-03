@@ -45,7 +45,14 @@ def analyze(file_path: Path) -> ModuleResult:
     )
 
 
-app = create_app("audio", analyze)
+def warmup() -> None:
+    try:
+        ssl_aasist_detector.load_model()
+    except BaseException:
+        pass  # reported at analysis time
+
+
+app = create_app("audio", analyze, warmup)
 
 
 if __name__ == "__main__":

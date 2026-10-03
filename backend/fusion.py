@@ -15,9 +15,30 @@ from common.fusion import calibrate_score
 from .config import MODULE_DETECTORS
 
 
-def _model_score(scores: list[float]) -> float:
-    # Many per-clip findings from one detector: the 90th percentile resists single outliers.
-    return float(np.percentile(scores, 90)) if len(scores) >= 5 else max(scores)
+def _model_score(findings: list[dict]) -> tuple[float, dict]:
+    """One detector's score for the file, and the finding it rests on.
+
+    A detector that scores many windows also reports a file-level aggregate ("clip_level" or
+    "video_level") and sustained "interval" findings. Those decide its score: single windows
+    are too noisy to, and remain in the case as detail only.
+    """
+    decisive = [f for f in findings if f["note"].startswith(("clip_level", "video_level")) or "interval" in f["note"].split(":")[0]]
+    if decisive:
+        top = max(decisive, key=lambda f: f["score"])
+        return top["score"], top
+    scores = [f["score"] for f in findings]
+    top = max(findings, key=lambda f: f["score"])
+    # Several unaggregated findings: the 90th percentile resists a single outlier.
+    return (float(np.percentile(scores, 90)) if len(scores) >= 5 else top["score"]), top
+
+
+def soften(score: float, threshold: float) -> float:
+    """Scores below a detector's decision threshold mean "classified as genuine".
+
+    These outputs are not calibrated probabilities, so 0.3 is not "30% manipulated". Below the
+    threshold the score is pulled toward zero (continuous at the threshold, unchanged above it).
+    """
+    return score if score >= threshold or threshold <= 0 else score * score / threshold
 
 
 def _no_data(f: dict) -> bool:
@@ -25,9 +46,10 @@ def _no_data(f: dict) -> bool:
     return f["score"] == 0.0 and f["note"].startswith("no_")
 
 
-def module_score(findings: list[dict], mode: str) -> tuple[float, dict | None, int]:
+def module_score(findings: list[dict], mode: str, thresholds: dict | None = None, learned: bool = False) -> tuple[float, dict | None, int]:
     """Strongest detector score in a module, the finding behind it, and how many of its
     detectors had nothing to examine."""
+    thresholds = thresholds or {}
     by_model: dict[str, list[dict]] = {}
     for f in findings:
         if f["kind"] == "error":
@@ -41,9 +63,11 @@ def module_score(findings: list[dict], mode: str) -> tuple[float, dict | None, i
         if not scored:
             empty += 1
             continue
-        score = _model_score([f["score"] for f in scored])
+        score, finding = _model_score(scored)
+        if learned:
+            score = soften(score, float(thresholds.get(finding["model"], 0.5)))
         if score > best:
-            best, top = score, max(scored, key=lambda f: f["score"])
+            best, top = score, finding
     return best, top, empty
 
 
@@ -57,7 +81,8 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
     for module in applicable:
         run = runs.get(module)
         cov = run["coverage"] if run and run["info"]["status"] in ("ok", "degraded") else 0.0
-        raw, finding, empty = module_score(run["findings"], mode) if cov > 0 else (0.0, None, 0)
+        learned = module not in fusion_cfg.get("heuristic_modules", [])
+        raw, finding, empty = module_score(run["findings"], mode, cfg["thresholds"], learned) if cov > 0 else (0.0, None, 0)
         # A detector with nothing to examine is not evidence that the file is clean.
         cov = max(0.0, cov - empty / max(len(MODULE_DETECTORS.get(module, [])), 1))
         coverage[module] = round(cov, 2)

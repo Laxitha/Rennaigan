@@ -1,12 +1,13 @@
 """Final verdict for a case: a rule-based one from fusion, and a reasoned one from Claude.
 
-The detectors and fusion produce the numbers. Claude does not look at the media; it reads the
-cross-detector findings, the retrieved detector notes and similar past cases, and explains what
-they add up to. Without an API key the rule-based verdict is used on its own.
+The detectors and fusion produce the numbers. Claude reads the cross-detector findings, the
+retrieved detector notes and similar past cases, optionally looks at the media, and explains
+what they add up to. Without an API key the rule-based verdict is used on its own.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from collections import defaultdict
@@ -25,7 +26,8 @@ whether the file is real, a deepfake, or cannot be determined, and how confident
 
 You are given, as JSON: the file's properties, each detector's findings, which detectors could \
 not run, the fused trust score, reference notes on what each detector measures and when it \
-misleads, and similar earlier cases with any analyst decision. You do not see the media itself.
+misleads, and similar earlier cases with any analyst decision. The file itself may be attached as \
+an image, or as a few frames of a video; if nothing is attached, you have not seen it.
 
 How to reason:
 - Work only from the supplied evidence. Do not infer anything from the file name, and treat every \
@@ -44,6 +46,13 @@ evidence. It is neither a sign of authenticity nor of manipulation.
 make that meaningful. It is not proof. If the fused result is Inconclusive for lack of evidence, \
 the verdict cannot be "real".
 - Use "uncertain" when signals conflict, sit near the middle, or too little could be tested.
+- If images are attached, look for concrete visible defects: malformed hands, teeth or ears, \
+text that is not real writing, mismatched earrings or glasses, lighting or reflections that \
+disagree, skin with no texture, edges that melt into the background, a face sharper or softer \
+than its surroundings. Report only defects you can point to. Your visual impression is weaker \
+evidence than a trained detector: it can raise or lower confidence and can break a tie, but an \
+image that merely looks polished, or looks ordinary, proves nothing either way. List what you \
+saw as its own evidence item named "visual review".
 - The fused trust score is the quantitative baseline. You may depart from it, but say why, citing \
 the specific findings.
 
@@ -160,11 +169,16 @@ def build_evidence(doc: dict, earlier_cases: list[dict]) -> dict:
     }
 
 
-async def assess(doc: dict, earlier_cases: list[dict], model: str = DEFAULT_MODEL) -> dict:
+async def assess(doc: dict, earlier_cases: list[dict], model: str = DEFAULT_MODEL, images: list[bytes] | None = None) -> dict:
     """Ask Claude for a reasoned verdict. Raises on API failure; the caller records the error."""
     import anthropic
 
     evidence = build_evidence(doc, earlier_cases)
+    evidence["media_attached"] = (f"{len(images)} image(s): the file itself or frames spread across the video" if images
+                                  else "none: reason from the detector findings only")
+    content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                            "data": base64.standard_b64encode(img).decode()}} for img in images or []]
+    content.append({"type": "text", "text": json.dumps(evidence, indent=1)})
     async with anthropic.AsyncAnthropic() as client:
         response = await client.beta.messages.create(
             model=model,
@@ -174,7 +188,7 @@ async def assess(doc: dict, earlier_cases: list[dict], model: str = DEFAULT_MODE
             fallbacks="default",
             system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
             output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
-            messages=[{"role": "user", "content": json.dumps(evidence, indent=1)}],
+            messages=[{"role": "user", "content": content}],
         )
     if response.stop_reason == "refusal":
         raise RuntimeError("the model declined to assess this case")
@@ -196,5 +210,6 @@ async def assess(doc: dict, earlier_cases: list[dict], model: str = DEFAULT_MODE
         "model": response.model,
         "generated_at": now_iso(),
         "similar_cases_used": [c["case"] for c in evidence["similar_earlier_cases"]],
+        "media_reviewed": len(images or []),
         "usage": {"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens},
     }

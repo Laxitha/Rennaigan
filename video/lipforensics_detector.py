@@ -26,6 +26,7 @@ import cv2
 import numpy as np
 import torch
 
+from common.face import detect_faces_yunet
 from common.schema import Finding, ModuleResult
 from common.utils import file_sha256, weights_sha256
 
@@ -91,11 +92,18 @@ def load_model():
 
 
 def _landmarks(frame_rgb: np.ndarray) -> np.ndarray | None:
-    found = LANDMARKER.get_landmarks(frame_rgb)
-    if not found:
+    """68 landmarks of the largest face.
+
+    The face box comes from YuNet, which runs in a few milliseconds; the landmark network then
+    only has to look at that box. face_alignment's own S3FD detector on every frame was the
+    slowest step of the whole pipeline.
+    """
+    faces = detect_faces_yunet(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+    if not faces:
         return None
-    # largest face in the frame
-    return max(found, key=lambda lm: np.ptp(lm[:, 0]) * np.ptp(lm[:, 1]))[:, :2]
+    x, y, w, h = max(faces, key=lambda f: f["box"][2] * f["box"][3])["box"]
+    found = LANDMARKER.get_landmarks_from_image(frame_rgb, detected_faces=[[x, y, x + w, y + h]])
+    return found[0][:, :2] if found else None
 
 
 class _RunCropper:
@@ -134,7 +142,7 @@ class _RunCropper:
         return self.crops
 
 
-def extract_mouth_segments(video25: Path) -> list[tuple[int, np.ndarray]]:
+def extract_mouth_segments(video25: Path, breaks: frozenset[int] = frozenset()) -> list[tuple[int, np.ndarray]]:
     """Aligned 96x96 grayscale mouth crops, as runs of consecutive frames with a visible face.
 
     Returns [(first_frame_index, array of shape (n, 96, 96))] for runs of at least one clip.
@@ -160,6 +168,8 @@ def extract_mouth_segments(video25: Path) -> list[tuple[int, np.ndarray]]:
         if not ok:
             break
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if index in breaks:  # a join between sampled windows: motion is not continuous across it
+            close()
         landmarks = _landmarks(rgb)
         if landmarks is None:
             close()
@@ -176,7 +186,7 @@ def extract_mouth_segments(video25: Path) -> list[tuple[int, np.ndarray]]:
     return segments
 
 
-def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
+def analyze(file_path: Path, video25_path: Path | None = None, breaks: frozenset[int] = frozenset()) -> ModuleResult:
     t0 = time.time()
     sha = file_sha256(file_path)
     model = load_model()
@@ -190,16 +200,19 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
                  "-vf", "scale=-2:'min(720,ih)'", "-r", str(FPS), "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(video25)],
                 check=True, capture_output=True, timeout=300,
             )
-        segments = extract_mouth_segments(video25)
+        segments = extract_mouth_segments(video25, breaks)
 
     findings: list[Finding] = []
+    logits: list[float] = []
     offset = (CROP - INPUT) // 2
     for seg_start, crops in segments:
         for i in range(0, len(crops) - CLIP_LENGTH + 1, CLIP_LENGTH):
             clip = crops[i:i + CLIP_LENGTH, offset:offset + INPUT, offset:offset + INPUT].astype(np.float32) / 255.0
             tensor = torch.from_numpy((clip - GRAY_MEAN) / GRAY_STD)[None, None].to(DEVICE)  # (1, 1, T, 88, 88)
             with torch.no_grad():
-                score = float(torch.sigmoid(model(tensor, lengths=[CLIP_LENGTH])).item())
+                logit = float(model(tensor, lengths=[CLIP_LENGTH]).item())
+            logits.append(logit)
+            score = 1.0 / (1.0 + np.exp(-logit))
             start = (seg_start + i) / FPS
             findings.append(Finding(
                 model="lipforensics", score=score, start=round(start, 2), end=round(start + CLIP_LENGTH / FPS, 2),
@@ -208,6 +221,20 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
 
     if not findings:
         findings.append(Finding(model="lipforensics", score=0.0, note="no_mouth_track: no face stayed visible for a full second"))
+    else:
+        # A stretch of consecutive flagged clips is local evidence the whole-video average would dilute.
+        run: list[Finding] = []
+        for f in findings + [None]:
+            if f is not None and f.score >= 0.7 and (not run or abs(f.start - run[-1].end) < 0.05):
+                run.append(f)
+                continue
+            if len(run) >= 3:
+                findings.append(Finding(model="lipforensics", score=float(np.mean([r.score for r in run])), start=run[0].start,
+                                        end=run[-1].end, note=f"lip_manipulation_interval: {len(run)} consecutive clips flagged"))
+            run = [f] if f is not None and f.score >= 0.7 else []
+        # Video-level score as in the paper's evaluation: the logits averaged over all clips.
+        findings.append(Finding(model="lipforensics", score=float(1.0 / (1.0 + np.exp(-np.mean(logits)))),
+                                note=f"video_level: mean over {len(logits)} one-second clips"))
 
     return ModuleResult(
         module="video",

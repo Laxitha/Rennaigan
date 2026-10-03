@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import tempfile
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Awaitable
 
@@ -15,12 +18,28 @@ from .schema import ModuleResult
 def create_app(
     module_name: str,
     analyze_fn: Callable[[Path], Awaitable[ModuleResult] | ModuleResult],
+    warmup: Callable[[], None] | None = None,
 ) -> FastAPI:
-    app = FastAPI(title=f"TruthFrame — {module_name}")
+    """`warmup` loads the models in the background at startup, so the first upload does not pay for it."""
+    state = {"ready": warmup is None}
+
+    def _warm():
+        try:
+            warmup()
+        finally:
+            state["ready"] = True
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if warmup is not None:
+            threading.Thread(target=_warm, daemon=True).start()
+        yield
+
+    app = FastAPI(title=f"Rennaigan — {module_name}", lifespan=lifespan)
 
     @app.get("/health")
     async def health():
-        return {"status": "ok", "module": module_name}
+        return {"status": "ok", "module": module_name, "ready": state["ready"]}
 
     @app.post("/analyze", response_model=ModuleResult)
     async def analyze(file: UploadFile = File(...)):
@@ -29,7 +48,8 @@ def create_app(
             shutil.copyfileobj(file.file, tmp)
             tmp_path = Path(tmp.name)
         try:
-            result = analyze_fn(tmp_path)
+            # Worker thread: /health keeps answering while a long analysis runs.
+            result = await asyncio.to_thread(analyze_fn, tmp_path)
             if hasattr(result, "__await__"):
                 result = await result
             return result

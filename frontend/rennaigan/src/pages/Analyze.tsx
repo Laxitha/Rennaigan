@@ -151,7 +151,7 @@ export default function Analyze() {
         <div data-reveal>
           <GlassUploader
             title="Drop media to begin forensic analysis"
-            hint="Supports MP4, WAV, PNG, JPG, MOV, WebM up to 100 MB. Analyzed live against the Rennaigan ML gateway."
+            hint="Supports MP4, WAV, PNG, JPG, MOV, WebM up to 1 GB, including long videos. Analyzed live against the Rennaigan ML gateway."
             onFiles={onFiles}
           />
         </div>

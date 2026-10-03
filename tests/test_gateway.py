@@ -250,7 +250,7 @@ def test_fusion_rule_based_modules_cannot_cap_trust(cfg):
 def test_fusion_detector_with_nothing_to_examine_is_not_clean_evidence(cfg):
     no_face = {"info": {"status": "ok"}, "coverage": 1.0, "findings": [
         {"model": m, "score": 0.0, "kind": "info", "note": n}
-        for m, n in (("sbi_video", "no_face_detected"), ("lipforensics", "no_mouth_track"), ("syncnet", "no_face_track"))]}
+        for m, n in (("sbi_video", "no_face_detected"), ("univfd_video", "no_frames"), ("lipforensics", "no_mouth_track"), ("syncnet", "no_face_track"))]}
     out = fuse({"video": no_face}, ["video"], "public", cfg)
     assert out["module_coverage"]["video"] == 0 and out["trust_score"] is None
 
@@ -281,7 +281,7 @@ def test_claude_assessment_is_recorded_and_sealed(client, samples, monkeypatch):
     from backend import assess
     seen = {}
 
-    async def fake_assess(doc, earlier, model):
+    async def fake_assess(doc, earlier, model, images=None):
         seen["evidence"] = assess.build_evidence(doc, earlier)
         return {"verdict": "deepfake", "confidence": 71, "headline": "Voice detector flags synthetic speech.",
                 "explanation": "e", "evidence": [], "caveats": [], "recommendation": "r", "model": model,
@@ -301,8 +301,40 @@ def test_claude_assessment_is_recorded_and_sealed(client, samples, monkeypatch):
     assert [e["action"] for e in again["audit"]][-2:] == ["assessment.generated", "case.sealed"]
     assert client.get(f"/cases/{case['id']}/audit/verify").json()["intact"]
 
-    async def failing(doc, earlier, model):
+    async def failing(doc, earlier, model, images=None):
         raise RuntimeError("rate limited")
     monkeypatch.setattr(assess, "assess", failing)
     failed = upload(client, samples / "photo.jpg").json()
     assert failed["verdict"]["source"] == "fusion" and "rate limited" in failed["assessment_error"]
+
+
+def test_chunked_upload(client, samples):
+    data = (samples / "clip.mp4").read_bytes()
+    start = client.post("/uploads", json={"name": "clip.mp4", "size": len(data)}).json()
+    half = len(data) // 2
+    assert client.put(f"/uploads/{start['upload_id']}/0", content=data[:half]).json()["received"] == half
+    assert client.put(f"/uploads/{start['upload_id']}/0", content=data[:half]).json()["received"] == half  # retry is ignored
+    assert client.put(f"/uploads/{start['upload_id']}/5", content=b"x").status_code == 409
+    assert client.put(f"/uploads/{start['upload_id']}/1", content=data[half:]).json()["received"] == len(data)
+    case = client.post(f"/uploads/{start['upload_id']}/analyze", json={"mode": "public"}).json()
+    assert case["media"]["media_type"] == "video" and case["file"]["size_bytes"] == len(data)
+    import hashlib
+    assert case["file"]["sha256"] == hashlib.sha256(data).hexdigest()
+
+    assert client.post("/uploads", json={"name": "x.exe", "size": 10}).status_code == 415
+    short = client.post("/uploads", json={"name": "clip.mp4", "size": len(data)}).json()
+    client.put(f"/uploads/{short['upload_id']}/0", content=data[:half])
+    assert client.post(f"/uploads/{short['upload_id']}/analyze", json={}).status_code == 422
+
+
+def test_fusion_uses_aggregates_and_softens_subthreshold_scores(cfg):
+    from backend.fusion import soften
+    assert soften(0.2, 0.5) == pytest.approx(0.08) and soften(0.5, 0.5) == 0.5 and soften(0.9, 0.5) == 0.9
+    windows = [{"model": "ssl_aasist", "score": s, "kind": "signal" if s >= 0.3 else "info", "note": "speech_appears_genuine"} for s in [0.05] * 20 + [0.97]]
+    noisy = {"info": {"status": "ok"}, "coverage": 1.0,
+             "findings": windows + [{"model": "ssl_aasist", "score": 0.05, "kind": "info", "note": "clip_level: median over 21 speech windows"}]}
+    out = fuse({"audio": noisy}, ["audio"], "public", cfg)
+    assert out["module_scores"]["audio"] < 0.05 and out["label"] == "Low risk"  # one stray window does not decide the file
+
+    sustained = {**noisy, "findings": noisy["findings"] + [{"model": "ssl_aasist", "score": 0.95, "kind": "signal", "note": "synthetic_speech_interval: 3 consecutive windows flagged"}]}
+    assert fuse({"audio": sustained}, ["audio"], "public", cfg)["label"] == "High manipulation indicators"

@@ -7,7 +7,7 @@ preprocessing:
   motion_fps: 25
   max_clip_length_sec: 60
   audio_sample_rate: 16000
-  max_upload_mb: 100
+  max_upload_mb: 1024   # large files are uploaded in chunks
 
 face_detection:
   model: buffalo_l
@@ -98,9 +98,12 @@ services:
   motion:   {url: "http://127.0.0.1:8005"}
 
 # Reasoned verdict (real / deepfake / uncertain) written by Claude from the detector findings,
-# detector reference notes and similar earlier cases. Only findings are sent, never the media.
+# detector reference notes and similar earlier cases. By default only findings are sent, not the media.
 # Used when ANTHROPIC_API_KEY is set where the gateway runs; otherwise the rule-based verdict stands.
 assessment:
   enabled: true
   model: claude-opus-5-5
-  timeout_s: 120
+  timeout_s: 180
+  # true also sends the image (or four video frames) for a visual review. This shares the
+  # uploaded media with Anthropic, so it is off unless you turn it on.
+  send_media: false
