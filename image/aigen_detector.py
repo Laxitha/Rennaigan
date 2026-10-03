@@ -26,6 +26,10 @@ from common.schema import Finding, ModuleResult
 from common.utils import file_sha256
 
 MODEL_IDS = ["haywoodsloan/ai-image-detector-deploy", "Ateeqq/ai-vs-human-image-detector"]
+# On video frames only the first classifier is used. Measured on 7 genuine and 16 generated
+# videos: the SigLIP model reacts to video compression and flagged 6 of the 7 genuine ones;
+# the SwinV2 model flagged none and caught 7 of 16 (every Veo clip, few Sora clips).
+VIDEO_MODELS = ("ai-image-detector-deploy",)
 GENERATED_WORDS = ("artificial", "ai", "fake", "generated", "synthetic")
 MODELS = None
 DEVICE = None
@@ -52,10 +56,15 @@ def load_model():
     return MODELS
 
 
-def score_images(images: list[Image.Image]) -> list[dict]:
-    """P(generated) for each image: {"score": mean, "<model>": its own score, ...}."""
+def score_images(images: list[Image.Image], only: tuple[str, ...] | None = None) -> list[dict]:
+    """P(generated) for each image: {"score": mean, "<model>": its own score, ...}.
+
+    `only` restricts scoring to the named classifiers (see VIDEO_MODELS).
+    """
     results = [{} for _ in images]
     for name, processor, model, generated in load_model():
+        if only is not None and name not in only:
+            continue
         inputs = {k: v.to(DEVICE) for k, v in processor(images=images, return_tensors="pt").items()}
         with torch.no_grad():
             probs = torch.softmax(model(**inputs).logits, dim=-1)[:, generated].cpu().tolist()

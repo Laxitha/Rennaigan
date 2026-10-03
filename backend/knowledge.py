@@ -32,10 +32,11 @@ DETECTORS = {
         "heavily filtered photos and scans are outside what it was tested on."
     ),
     "aigen_video": (
-        "The AI-generated image detector applied to up to 16 frames spread across the video; the score is the "
-        "median. This is the only check for video that was generated outright rather than face-swapped. It has "
-        "not been measured on video: compression removes part of the signal, so a high median with most frames "
-        "above 0.5 is meaningful, a median near 0.5 is not."
+        "An AI-generated image classifier applied to up to 16 frames spread across the video; the score is the "
+        "median. This is the only check for video that was generated outright rather than face-swapped. "
+        "Measured on 7 genuine and 16 generated videos: it flagged none of the genuine ones and 7 of the 16 "
+        "generated (every Veo clip, few Sora clips). So a high score is strong evidence, but a low score does "
+        "not rule out a generated video: it misses many."
     ),
     "trufor": (
         "TruFor: fuses RGB with a learned camera-noise fingerprint (Noiseprint++). Score is the image-level "

@@ -21,7 +21,7 @@ MAX_FRAMES = 16
 
 
 def analyze(file_path: Path, frames_dir: Path, timestamps: list[float], max_frames: int = MAX_FRAMES) -> ModuleResult:
-    from image.aigen_detector import score_images
+    from image.aigen_detector import VIDEO_MODELS, score_images
 
     t0 = time.time()
     sha = file_sha256(file_path)
@@ -31,7 +31,7 @@ def analyze(file_path: Path, frames_dir: Path, timestamps: list[float], max_fram
                             findings=[Finding(model="aigen_video", score=0.0, note="no_frames: no frame could be decoded")])
 
     picks = sorted(set(np.linspace(0, len(files) - 1, min(max_frames, len(files))).round().astype(int).tolist()))
-    scores = np.array([r["score"] for r in score_images([Image.open(files[i]).convert("RGB") for i in picks])])
+    scores = np.array([r["score"] for r in score_images([Image.open(files[i]).convert("RGB") for i in picks], only=VIDEO_MODELS)])
 
     top = int(np.argmax(scores))
     return ModuleResult(
