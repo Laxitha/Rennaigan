@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+
+import cv2
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from common import budget
+from common.face import any_face
 from common.sampling import build_sample, coverage_note, extract_frames, plan, probe_duration, to_source_time, window_bounds
 from common.schema import Finding, ModuleResult
 from common.service import create_app
@@ -34,12 +37,15 @@ def analyze(file_path: Path) -> ModuleResult:
         frames_dir = work / "frames"
         frames_dir.mkdir()
         sample = work / "sample25.mp4"
-        with ThreadPoolExecutor(2) as pool:
-            frames_job = pool.submit(extract_frames, file_path, frames_dir, duration, max_frames=plan_["max_frames"])
-            sample_job = pool.submit(build_sample, file_path, sample, windows)
-            timestamps = frames_job.result()
+        timestamps = extract_frames(file_path, frames_dir, duration, max_frames=plan_["max_frames"])
+        # A spread of frames with no face: the face-based detectors have nothing to examine,
+        # and the constant-frame-rate sample clip they would need is not built.
+        files = sorted(frames_dir.glob("*.jpg"))
+        probe = [cv2.imread(str(f)) for f in files[::max(1, len(files) // 12)]]
+        has_face = any_face([f for f in probe if f is not None])
+        if has_face:
             try:
-                sample_job.result()
+                build_sample(file_path, sample, windows)
             except Exception:
                 sample = None  # the detectors fall back to preparing their own input
         prepared = time.time() - t0
@@ -54,6 +60,12 @@ def analyze(file_path: Path) -> ModuleResult:
         if not plan_["lip_sync"]:
             del jobs["syncnet"]
 
+        skipped = []
+        if not has_face:
+            for name, note in (("sbi_video", "no_face_detected"), ("lipforensics", "no_mouth_track"), ("syncnet", "no_face_track")):
+                if jobs.pop(name, None):
+                    skipped.append(Finding(model=name, score=0.0, note=f"{note}: no face in the sampled frames"))
+
         def run(name: str):
             started = time.time()
             try:
@@ -66,7 +78,7 @@ def analyze(file_path: Path) -> ModuleResult:
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    findings, artifacts, weights, timings = [], {}, {}, {"prepare": round(prepared, 2)}
+    findings, artifacts, weights, timings = list(skipped), {}, {}, {"prepare": round(prepared, 2)}
     for name, result, seconds in outcomes:
         timings[name] = round(seconds, 2)
         if isinstance(result, Exception):

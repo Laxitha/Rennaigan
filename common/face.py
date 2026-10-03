@@ -63,12 +63,16 @@ def detect_faces_yunet(image: np.ndarray, det_thresh: float = 0.6) -> list[dict]
     return results
 
 
-def detect_faces(image: np.ndarray, det_thresh: float = DET_THRESH) -> list[dict]:
+def detect_faces(image: np.ndarray, det_thresh: float = DET_THRESH, embeddings: bool = False) -> list[dict]:
     """Detect faces. Returns list of dicts with box, landmarks, embedding.
 
-    InsightFace is used first because it also gives identity embeddings. When it finds
-    nothing, YuNet is tried, so one detector missing a face does not hide it from SBI.
+    Boxes come from YuNet, which takes a few milliseconds on a CPU. InsightFace is far slower
+    and is only run when `embeddings` are needed (identity drift), and only if YuNet saw a face.
     """
+    if not embeddings:
+        return detect_faces_yunet(image)
+    if not detect_faces_yunet(image):
+        return []  # nothing to embed; skip the much slower InsightFace pass
     results = _detect_faces_insightface(image, det_thresh)
     return results if results else detect_faces_yunet(image)
 
@@ -116,3 +120,8 @@ def get_largest_face(faces: list[dict]) -> dict | None:
     if not faces:
         return None
     return max(faces, key=lambda f: f["box"][2] * f["box"][3])
+
+
+def any_face(frames: list[np.ndarray]) -> bool:
+    """Quick check whether any of a few frames shows a face, before running face-based detectors."""
+    return any(detect_faces_yunet(frame) for frame in frames)

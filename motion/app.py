@@ -22,7 +22,7 @@ from pathlib import Path
 import cv2
 
 from common import budget
-from common.face import detect_faces, get_largest_face
+from common.face import any_face, detect_faces, get_largest_face
 from common.sampling import build_sample, coverage_note, plan, probe_duration, window_bounds
 from common.schema import Finding, ModuleResult
 from common.service import create_app
@@ -52,6 +52,20 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
         target = video25_path or build_sample(file_path, work / "sample25.mp4", windows, fps=FPS, max_height=480, audio=False)
         timings["prepare"] = round(time.time() - t0, 2)
 
+        # No face in a spread of frames: none of the motion checks apply, so skip the full pass.
+        probe = cv2.VideoCapture(str(target))
+        total = int(probe.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        samples = []
+        for position in range(0, total, max(1, total // 10)):
+            probe.set(cv2.CAP_PROP_POS_FRAMES, position)
+            ok, frame = probe.read()
+            if ok:
+                samples.append(frame)
+        probe.release()
+        if not any_face(samples):
+            return ModuleResult(module="motion", file_sha256=sha, runtime_s=time.time() - t0, timings=timings,
+                                findings=[Finding(model="landmarks", score=0.0, note="no_face_detected: no face in the sampled frames")])
+
         cap = cv2.VideoCapture(str(target))
         landmarks, embeddings, flow_pairs = [], [], []
         frame_shape, box, previous = None, None, None
@@ -65,7 +79,7 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
             landmarks.append(get_landmarks(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
 
             if index % FACE_EVERY == 0:
-                face = get_largest_face(detect_faces(frame))
+                face = get_largest_face(detect_faces(frame, embeddings=True))
                 box = face["box"] if face else None
                 embeddings.append((index, face.get("embedding") if face else None))
             # the frame after a flow sample completes the pair

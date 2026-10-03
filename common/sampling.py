@@ -76,7 +76,7 @@ def window_bounds(windows: list[Window], fps: float) -> list[tuple[int, int]]:
 def build_sample(src: Path, dest: Path, windows: list[Window], *, fps: int = 25, max_height: int = 720, audio: bool = True) -> Path:
     """Write the windows, joined end to end, as one constant-frame-rate clip."""
     audio = audio and has_audio(src)
-    encode = ["-vf", f"scale=-2:'min({max_height},ih)'", "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast",
+    encode = ["-vf", f"scale=-2:'min({max_height},ih)'", "-r", str(fps), "-c:v", "libx264", "-preset", "ultrafast",
               "-crf", "20", "-pix_fmt", "yuv420p"]
     encode += ["-c:a", "aac", "-ar", "16000", "-ac", "1"] if audio else ["-an"]
     base = ["ffmpeg", "-y", "-loglevel", "error"]
