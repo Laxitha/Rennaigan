@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -117,8 +118,11 @@ def run_ffprobe(file_path: Path) -> tuple[dict | None, list[Finding]]:
 
 
 def run_c2patool(file_path: Path) -> tuple[dict | None, list[Finding]]:
-    data = run_cmd(["c2patool", str(file_path)])
     findings: list[Finding] = []
+    if shutil.which("c2patool") is None:
+        # Not the same as "no manifest": the file was never checked for one.
+        return None, [Finding(model="c2patool", score=0.0, note="no_c2pa_check: c2patool is not installed on this machine")]
+    data = run_cmd(["c2patool", str(file_path)])
 
     if data is None:
         findings.append(Finding(

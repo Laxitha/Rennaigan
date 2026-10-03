@@ -10,6 +10,14 @@ step() { echo; echo "=== $*"; }
 step "System tools"
 command -v exiftool >/dev/null || apt-get -qq install -y libimage-exiftool-perl >/dev/null 2>&1
 command -v exiftool >/dev/null && echo "exiftool ok" || echo "exiftool MISSING"
+# c2patool reads Content Credentials (C2PA provenance). Official build from the Content Authenticity Initiative.
+if ! command -v c2patool >/dev/null; then
+    C2PA=c2patool-v0.27.22
+    wget -q "https://github.com/contentauth/c2pa-rs/releases/download/$C2PA/$C2PA-x86_64-unknown-linux-gnu.tar.gz" -O /tmp/c2patool.tar.gz \
+        && tar -xzf /tmp/c2patool.tar.gz -C /tmp && install -m 755 "$(find /tmp -maxdepth 3 -name c2patool -type f | head -1)" /usr/local/bin/c2patool
+    rm -f /tmp/c2patool.tar.gz
+fi
+command -v c2patool >/dev/null && echo "c2patool ok" || echo "c2patool MISSING (optional)"
 
 step "Model repositories"
 mkdir -p repos weights/sbi weights/trufor
