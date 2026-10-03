@@ -1,0 +1,56 @@
+version: "3.9"
+
+services:
+  image-forensics:
+    build:
+      context: .
+      dockerfile: image/Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./weights:/app/weights
+      - ./repos:/app/repos
+      - ./samples:/app/samples
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  video-forensics:
+    build:
+      context: .
+      dockerfile: video/Dockerfile
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./weights:/app/weights
+      - ./repos:/app/repos
+      - ./samples:/app/samples
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  audio-forensics:
+    build:
+      context: .
+      dockerfile: audio/Dockerfile
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./weights:/app/weights
+      - ./repos:/app/repos
+      - ./samples:/app/samples
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+
+  metadata-forensics:
+    build:
+      context: .
+      dockerfile: metadata/Dockerfile
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./samples:/app/samples
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

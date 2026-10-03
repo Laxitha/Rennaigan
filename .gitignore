@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.eggs/
+dist/
+build/
+*.so
+.env
+
+# Model weights (download separately)
+weights/
+repos/
+
+# Test artifacts
+*.heatmap.png
+*.spectrogram.png
+*.metadata.json
+
+# IDE
+.vscode/
+.idea/
