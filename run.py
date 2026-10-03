@@ -6,6 +6,7 @@ Examples:
   python run.py video clip.mp4
   python run.py audio voice.wav
   python run.py metadata file.mp4
+  python run.py motion clip.mp4
 """
 
 import json
@@ -33,9 +34,11 @@ def main():
         from audio.app import analyze
     elif module_name == "metadata":
         from metadata.app import analyze
+    elif module_name == "motion":
+        from motion.app import analyze
     else:
         print(f"Unknown module: {module_name}", file=sys.stderr)
-        print("Choose from: image, video, audio, metadata")
+        print("Choose from: image, video, audio, metadata, motion")
         sys.exit(1)
 
     result = analyze(file_path)

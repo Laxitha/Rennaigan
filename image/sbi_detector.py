@@ -1,9 +1,13 @@
-"""SBI (SelfBlendedImages) face-swap detector wrapper.
+"""SBI (SelfBlendedImages) face-swap detector.
 
 Setup:
   1. git clone https://github.com/mapooon/selfblendedimages.git repos/sbi
-  2. Download weights: EfficientNet-B4 checkpoint → weights/sbi.tar
-  3. pip install retinaface-pytorch torchvision
+  2. Download weights: FFc23.tar (compressed video, best for social media) → weights/sbi/FFc23.tar
+     Or FFraw.tar for raw video
+  3. pip install efficientnet_pytorch retinaface_pytorch
+
+Input: face crop 380x380, ImageNet normalization.
+Output: P(fake) per face.
 """
 
 from __future__ import annotations
@@ -15,12 +19,22 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
+from torchvision import transforms
 
 from common.schema import Finding, ModuleResult
 from common.utils import file_sha256
+from common.face import detect_faces, crop_face
 
-WEIGHTS_PATH = Path("weights/sbi.tar")
+WEIGHTS_PATH = Path("weights/sbi/FFc23.tar")
 MODEL = None
+THRESHOLD = 0.5
+INPUT_SIZE = 380
+
+TRANSFORM = transforms.Compose([
+    transforms.Resize((INPUT_SIZE, INPUT_SIZE)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
 
 
 def load_model():
@@ -28,33 +42,54 @@ def load_model():
     if MODEL is not None:
         return MODEL
 
-    # TODO: Replace with actual SBI model loading
-    # from selfblendedimages repo:
-    #   from src.model import Detector
-    #   MODEL = Detector()
-    #   MODEL.load_state_dict(torch.load(WEIGHTS_PATH, map_location="cpu"))
-    #   MODEL.eval()
-    raise NotImplementedError(
-        "Clone SBI repo and uncomment model loading. "
-        "See docstring for setup steps."
-    )
+    # TODO: uncomment after cloning SBI repo
+    # import sys
+    # sys.path.insert(0, "repos/sbi")
+    # from efficientnet_pytorch import EfficientNet
+    # MODEL = EfficientNet.from_name("efficientnet-b4", num_classes=1)
+    # ckpt = torch.load(WEIGHTS_PATH, map_location="cpu")
+    # MODEL.load_state_dict(ckpt["model"])
+    # MODEL.eval()
+    # if torch.cuda.is_available():
+    #     MODEL = MODEL.cuda()
+    raise NotImplementedError("Clone SBI repo and download FFc23.tar weights.")
 
 
-def detect_faces(image: np.ndarray) -> list[dict]:
-    """Detect faces using RetinaFace; returns list of {box, score}."""
-    try:
-        from retinaface import RetinaFace
-        detections = RetinaFace.detect_faces(image)
-        faces = []
-        for key, val in detections.items():
-            x1, y1, x2, y2 = val["facial_area"]
-            faces.append({
-                "box": [int(x1), int(y1), int(x2 - x1), int(y2 - y1)],
-                "confidence": float(val["score"]),
-            })
-        return faces
-    except Exception:
+def analyze_image(image: np.ndarray, file_path: Path | None = None) -> list[Finding]:
+    """Score all faces in a single image. Used by both image and video modules."""
+    faces = detect_faces(image)
+    if not faces:
         return []
+
+    model = load_model()
+    device = next(model.parameters()).device
+    findings: list[Finding] = []
+
+    crops = []
+    boxes = []
+    for face in faces:
+        crop = crop_face(image, face["box"])
+        crop_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+        crops.append(TRANSFORM(crop_pil))
+        boxes.append(face["box"])
+
+    batch = torch.stack(crops).to(device)
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=device.type == "cuda"):
+        logits = model(batch)
+        scores = torch.sigmoid(logits).squeeze(-1).cpu().tolist()
+
+    if isinstance(scores, float):
+        scores = [scores]
+
+    for score, box in zip(scores, boxes):
+        findings.append(Finding(
+            model="sbi",
+            score=score,
+            region=box,
+            note="face_swap_detection",
+        ))
+
+    return findings
 
 
 def analyze(file_path: Path) -> ModuleResult:
@@ -63,36 +98,9 @@ def analyze(file_path: Path) -> ModuleResult:
 
     img = cv2.imread(str(file_path))
     if img is None:
-        return ModuleResult(
-            module="image",
-            file_sha256=sha,
-            findings=[],
-            runtime_s=time.time() - t0,
-        )
+        return ModuleResult(module="image", file_sha256=sha, findings=[], runtime_s=time.time() - t0)
 
-    faces = detect_faces(img)
-    findings: list[Finding] = []
-
-    model = load_model()
-
-    for face in faces:
-        x, y, w, h = face["box"]
-        crop = img[y : y + h, x : x + w]
-        crop_pil = Image.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-        crop_resized = crop_pil.resize((224, 224))
-
-        # TODO: preprocess and run model inference
-        # tensor = transform(crop_resized).unsqueeze(0)
-        # with torch.no_grad():
-        #     score = torch.sigmoid(model(tensor)).item()
-        score = 0.0  # placeholder
-
-        findings.append(Finding(
-            model="sbi",
-            score=score,
-            region=[x, y, w, h],
-            note="face_swap_detection",
-        ))
+    findings = analyze_image(img, file_path)
 
     return ModuleResult(
         module="image",

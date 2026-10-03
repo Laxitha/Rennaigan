@@ -2,8 +2,13 @@
 
 Setup:
   1. git clone https://github.com/joonson/syncnet_python.git repos/syncnet
-  2. Download weights per their README → weights/syncnet.model
+  2. Run download_model.sh to get weights
   3. pip install python_speech_features
+
+Input: 25 fps video with 16 kHz audio, split into 3-second windows.
+Commands: run_pipeline.py (face tracking) then run_syncnet.py,
+  both with --videofile, --reference, --data_dir.
+Flag when: confidence < 3 or absolute offset > 3 frames (120ms).
 """
 
 from __future__ import annotations
@@ -15,66 +20,46 @@ from pathlib import Path
 
 from common.schema import Finding, ModuleResult
 from common.utils import file_sha256
+from common.preprocess import get_video_duration
 
-WEIGHTS_PATH = Path("weights/syncnet.model")
-WINDOW_SEC = 2.5
-STRIDE_SEC = 1.0
 CONFIDENCE_THRESHOLD = 3.0
+OFFSET_THRESHOLD_FRAMES = 3
+WINDOW_SEC = 3.0
+STRIDE_SEC = 1.5
 
 
-def load_model():
-    # TODO: Replace with actual SyncNet loading
-    # import sys
-    # sys.path.insert(0, "repos/syncnet")
-    # from SyncNetModel import S as SyncNetModel
-    # model = SyncNetModel()
-    # model.loadParameters(str(WEIGHTS_PATH))
-    # model.eval()
-    # return model
-    raise NotImplementedError(
-        "Clone SyncNet repo and uncomment model loading. "
-        "See docstring for setup steps."
-    )
-
-
-def get_video_duration(video_path: Path) -> float:
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
-        capture_output=True, text=True,
-    )
-    return float(result.stdout.strip())
-
-
-def analyze(file_path: Path) -> ModuleResult:
+def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
     t0 = time.time()
     sha = file_sha256(file_path)
 
+    target = video25_path or file_path
+
     try:
-        duration = get_video_duration(file_path)
+        duration = get_video_duration(target)
     except Exception:
-        return ModuleResult(
-            module="video", file_sha256=sha, findings=[], runtime_s=time.time() - t0
-        )
+        return ModuleResult(module="video", file_sha256=sha, findings=[], runtime_s=time.time() - t0)
 
-    model = load_model()
     findings: list[Finding] = []
-
-    # Slide windows across the video
     pos = 0.0
-    while pos + WINDOW_SEC <= duration:
-        # TODO: extract window, run SyncNet
-        # offset, confidence = run_syncnet_window(model, file_path, pos, WINDOW_SEC)
-        offset = 0.0  # placeholder
-        confidence = 10.0  # placeholder (high = in sync)
 
-        if confidence < CONFIDENCE_THRESHOLD:
+    while pos + WINDOW_SEC <= duration:
+        # TODO: extract 3s window and run SyncNet
+        # 1. ffmpeg -ss {pos} -t 3 -i video25.mp4 window.mp4
+        # 2. run_pipeline.py --videofile window.mp4 --reference ... --data_dir ...
+        # 3. run_syncnet.py --videofile window.mp4 --reference ... --data_dir ...
+        # 4. Parse output for offset and confidence
+
+        offset = 0  # placeholder
+        confidence = 10.0  # placeholder
+
+        if confidence < CONFIDENCE_THRESHOLD or abs(offset) > OFFSET_THRESHOLD_FRAMES:
+            score = 1.0 - min(confidence / 10.0, 1.0)
             findings.append(Finding(
                 model="syncnet",
-                score=1.0 - min(confidence / 10.0, 1.0),
+                score=score,
                 start=pos,
                 end=pos + WINDOW_SEC,
-                note=f"low_sync_confidence={confidence:.2f}",
+                note=f"av_offset={offset}frames, confidence={confidence:.2f}",
             ))
 
         pos += STRIDE_SEC

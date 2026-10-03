@@ -1,9 +1,12 @@
-"""UniversalFakeDetect (UnivFD) — AI-generated image detector wrapper.
+"""UniversalFakeDetect (UnivFD) — AI-generated image detector.
 
 Setup:
   1. git clone https://github.com/WisconsinAIVision/UniversalFakeDetect.git repos/univfd
-  2. Download weights: CLIP ViT-L/14 + linear head → weights/univfd.pth
+  2. Download fc_weights.pth → pretrained_weights/fc_weights.pth
   3. pip install open_clip_torch
+
+Input: whole image, 224x224 center crop, CLIP normalization.
+Output: P(fake) per image (sigmoid).
 """
 
 from __future__ import annotations
@@ -13,33 +16,45 @@ from pathlib import Path
 
 import torch
 from PIL import Image
+from torchvision import transforms
 
 from common.schema import Finding, ModuleResult
 from common.utils import file_sha256
 
-WEIGHTS_PATH = Path("weights/univfd.pth")
+WEIGHTS_PATH = Path("weights/univfd/fc_weights.pth")
 MODEL = None
 PREPROCESS = None
+THRESHOLD = 0.5
+INPUT_SIZE = 224
+
+CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
+
+TRANSFORM = transforms.Compose([
+    transforms.Resize(INPUT_SIZE, interpolation=transforms.InterpolationMode.BICUBIC),
+    transforms.CenterCrop(INPUT_SIZE),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
+])
 
 
 def load_model():
-    global MODEL, PREPROCESS
+    global MODEL
     if MODEL is not None:
-        return MODEL, PREPROCESS
+        return MODEL
 
-    # TODO: Replace with actual UnivFD loading
+    # TODO: uncomment after cloning UnivFD repo
     # import open_clip
-    # clip_model, _, preprocess = open_clip.create_model_and_transforms(
-    #     "ViT-L-14", pretrained="openai"
-    # )
+    # clip_model, _, _ = open_clip.create_model_and_transforms("ViT-L-14", pretrained="openai")
+    # clip_model.eval()
     # fc = torch.nn.Linear(768, 1)
     # fc.load_state_dict(torch.load(WEIGHTS_PATH, map_location="cpu"))
-    # MODEL = (clip_model, fc)
-    # PREPROCESS = preprocess
-    raise NotImplementedError(
-        "Clone UnivFD repo and uncomment model loading. "
-        "See docstring for setup steps."
-    )
+    # fc.eval()
+    # device = "cuda" if torch.cuda.is_available() else "cpu"
+    # clip_model = clip_model.to(device)
+    # fc = fc.to(device)
+    # MODEL = (clip_model, fc, device)
+    raise NotImplementedError("Clone UnivFD repo and download fc_weights.pth.")
 
 
 def analyze(file_path: Path) -> ModuleResult:
@@ -49,22 +64,14 @@ def analyze(file_path: Path) -> ModuleResult:
     try:
         img = Image.open(file_path).convert("RGB")
     except Exception:
-        return ModuleResult(
-            module="image",
-            file_sha256=sha,
-            findings=[],
-            runtime_s=time.time() - t0,
-        )
+        return ModuleResult(module="image", file_sha256=sha, findings=[], runtime_s=time.time() - t0)
 
-    clip_model, fc = load_model()[0]
-    preprocess = load_model()[1]
+    clip_model, fc, device = load_model()
+    tensor = TRANSFORM(img).unsqueeze(0).to(device)
 
-    # TODO: run inference
-    # tensor = preprocess(img).unsqueeze(0)
-    # with torch.no_grad():
-    #     feat = clip_model.encode_image(tensor)
-    #     score = torch.sigmoid(fc(feat)).item()
-    score = 0.0  # placeholder
+    with torch.no_grad():
+        feat = clip_model.encode_image(tensor)
+        score = torch.sigmoid(fc(feat)).item()
 
     findings = [Finding(
         model="univfd",

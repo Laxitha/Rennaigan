@@ -1,11 +1,16 @@
-"""Orchestrator client — calls all running detector services and fuses results.
+"""Orchestrator — calls all running detector services and fuses results.
 
-This is what the main TruthFrame backend imports. It calls whichever
-module services are running and aggregates their ModuleResults.
+This is what the main Rennaigan backend imports. It calls whichever
+module services are running, aggregates ModuleResults, and applies
+calibrated fusion with temperature scaling.
 
 Usage:
   from orchestrator import analyze_media
   results = await analyze_media("suspect_video.mp4")
+
+  # Or CLI:
+  python orchestrator.py video.mp4
+  python orchestrator.py video.mp4 --mode identity
 """
 
 from __future__ import annotations
@@ -16,12 +21,14 @@ from pathlib import Path
 import httpx
 
 from common.schema import ModuleResult
+from common.fusion import fuse_results, load_config
 
 MODULES = {
     "image": "http://localhost:8001",
     "video": "http://localhost:8002",
     "audio": "http://localhost:8003",
     "metadata": "http://localhost:8004",
+    "motion": "http://localhost:8005",
 }
 
 
@@ -54,15 +61,17 @@ async def call_module(
 async def analyze_media(
     file_path: str | Path,
     modules: list[str] | None = None,
-) -> list[ModuleResult]:
+    mode: str = "public",
+) -> dict:
     """Analyze a media file across all available detector modules.
 
     Args:
         file_path: Path to the media file.
         modules: Optional list of module names to run. Defaults to all.
+        mode: "public" or "identity" (KYC mode with reference voice/face).
 
     Returns:
-        List of ModuleResult from each responding module.
+        Fused result dict with trust_score, label, findings, etc.
     """
     file_path = Path(file_path)
     targets = {k: v for k, v in MODULES.items() if modules is None or k in modules}
@@ -74,34 +83,10 @@ async def analyze_media(
         ]
         raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    results = []
-    for r in raw_results:
-        if isinstance(r, ModuleResult):
-            results.append(r)
-    return results
+    results = [r for r in raw_results if isinstance(r, ModuleResult)]
+    config = load_config()
 
-
-def fuse_results(results: list[ModuleResult]) -> dict:
-    """Simple fusion: aggregate findings, compute overall score."""
-    all_findings = []
-    all_artifacts = {}
-
-    for r in results:
-        all_findings.extend([f.model_dump() for f in r.findings])
-        all_artifacts.update(r.artifacts)
-
-    scores = [f["score"] for f in all_findings if f["score"] > 0]
-    overall = max(scores) if scores else 0.0
-    mean_score = sum(scores) / len(scores) if scores else 0.0
-
-    return {
-        "overall_score": overall,
-        "mean_score": mean_score,
-        "modules_responded": [r.module for r in results],
-        "total_findings": len(all_findings),
-        "findings": all_findings,
-        "artifacts": all_artifacts,
-    }
+    return fuse_results(results, mode=mode, config=config)
 
 
 if __name__ == "__main__":
@@ -109,9 +94,15 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python orchestrator.py <file>")
+        print("Usage: python orchestrator.py <file> [--mode public|identity]")
         sys.exit(1)
 
-    results = asyncio.run(analyze_media(sys.argv[1]))
-    fused = fuse_results(results)
-    print(json.dumps(fused, indent=2))
+    file_path = sys.argv[1]
+    mode = "public"
+    if "--mode" in sys.argv:
+        idx = sys.argv.index("--mode")
+        if idx + 1 < len(sys.argv):
+            mode = sys.argv[idx + 1]
+
+    result = asyncio.run(analyze_media(file_path, mode=mode))
+    print(json.dumps(result, indent=2))

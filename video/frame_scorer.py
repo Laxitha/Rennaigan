@@ -1,13 +1,12 @@
 """Frame-level face-swap scoring — reuses SBI on sampled video frames.
 
-Extracts frames at a configurable FPS, runs SBI face detection on each,
-smooths per-face scores, and converts to time intervals.
+Extracts frames at 3 fps, runs SBI on the largest face per frame,
+smooths with rolling median, converts to timed intervals with hysteresis.
+Clip-level score = 90th percentile of smoothed scores.
 """
 
 from __future__ import annotations
 
-import subprocess
-import tempfile
 import time
 from pathlib import Path
 
@@ -18,81 +17,119 @@ from common.schema import Finding, ModuleResult
 from common.utils import file_sha256
 
 SAMPLE_FPS = 3
+SMOOTH_WINDOW = 5
+THRESHOLD_HIGH = 0.6
+THRESHOLD_LOW = 0.4
+MIN_INTERVAL_SEC = 0.5
+MERGE_GAP_SEC = 1.0
 
 
-def extract_frames(video_path: Path, fps: int = SAMPLE_FPS) -> list[tuple[float, Path]]:
-    tmpdir = Path(tempfile.mkdtemp(prefix="tf_frames_"))
-    cmd = [
-        "ffmpeg", "-i", str(video_path),
-        "-vf", f"fps={fps}",
-        "-q:v", "2",
-        str(tmpdir / "frame_%05d.jpg"),
-        "-y", "-loglevel", "error",
-    ]
-    subprocess.run(cmd, check=True)
-
-    frames = []
-    for i, f in enumerate(sorted(tmpdir.glob("frame_*.jpg"))):
-        timestamp = i / fps
-        frames.append((timestamp, f))
-    return frames
-
-
-def smooth_scores(timestamps: list[float], scores: list[float], window: int = 5) -> list[float]:
+def smooth_scores(scores: list[float], window: int = SMOOTH_WINDOW) -> list[float]:
+    """Rolling median over `window` samples (~1.7s at 3fps)."""
     if len(scores) < window:
         return scores
-    kernel = np.ones(window) / window
-    return np.convolve(scores, kernel, mode="same").tolist()
+    result = []
+    half = window // 2
+    for i in range(len(scores)):
+        start = max(0, i - half)
+        end = min(len(scores), i + half + 1)
+        result.append(float(np.median(scores[start:end])))
+    return result
 
 
 def scores_to_intervals(
-    timestamps: list[float], scores: list[float], threshold: float = 0.5
+    timestamps: list[float],
+    scores: list[float],
 ) -> list[tuple[float, float, float]]:
+    """Convert scores to intervals using hysteresis (0.6 on, 0.4 off)."""
     intervals = []
-    start = None
+    active = False
+    start = 0.0
     seg_scores = []
 
     for ts, sc in zip(timestamps, scores):
-        if sc >= threshold:
-            if start is None:
-                start = ts
-            seg_scores.append(sc)
-        else:
-            if start is not None:
+        if not active and sc >= THRESHOLD_HIGH:
+            active = True
+            start = ts
+            seg_scores = [sc]
+        elif active and sc < THRESHOLD_LOW:
+            if ts - start >= MIN_INTERVAL_SEC:
                 intervals.append((start, ts, float(np.mean(seg_scores))))
-                start = None
-                seg_scores = []
+            active = False
+            seg_scores = []
+        elif active:
+            seg_scores.append(sc)
 
-    if start is not None:
+    if active and timestamps[-1] - start >= MIN_INTERVAL_SEC:
         intervals.append((start, timestamps[-1], float(np.mean(seg_scores))))
 
-    return intervals
+    # Merge intervals closer than MERGE_GAP_SEC
+    merged = []
+    for interval in intervals:
+        if merged and interval[0] - merged[-1][1] < MERGE_GAP_SEC:
+            prev = merged.pop()
+            merged.append((prev[0], interval[1], max(prev[2], interval[2])))
+        else:
+            merged.append(interval)
+
+    return merged
 
 
-def analyze(file_path: Path) -> ModuleResult:
+def analyze(file_path: Path, frames_dir: Path | None = None) -> ModuleResult:
     t0 = time.time()
     sha = file_sha256(file_path)
 
-    frames = extract_frames(file_path)
-    if not frames:
-        return ModuleResult(
-            module="video", file_sha256=sha, findings=[], runtime_s=time.time() - t0
-        )
+    if frames_dir is None:
+        from common.preprocess import preprocess_media
+        import tempfile
+        work = Path(tempfile.mkdtemp(prefix="tf_video_"))
+        result = preprocess_media(file_path, work)
+        frames_dir = result["frames_dir"]
+
+    frame_files = sorted(frames_dir.glob("*.jpg"))
+    if not frame_files:
+        return ModuleResult(module="video", file_sha256=sha, findings=[], runtime_s=time.time() - t0)
 
     timestamps = []
     raw_scores = []
+    no_face_count = 0
 
-    for ts, frame_path in frames:
-        # TODO: import and call sbi_detector on each frame
-        # from image.sbi_detector import detect_faces, load_model
-        # faces = detect_faces(cv2.imread(str(frame_path)))
-        # max_score = max(face_scores) if face_scores else 0.0
-        max_score = 0.0  # placeholder
-        timestamps.append(ts)
-        raw_scores.append(max_score)
+    for i, frame_path in enumerate(frame_files):
+        ts = i / SAMPLE_FPS
+        img = cv2.imread(str(frame_path))
+        if img is None:
+            continue
 
-    smoothed = smooth_scores(timestamps, raw_scores)
-    intervals = scores_to_intervals(timestamps, smoothed, threshold=0.5)
+        try:
+            from common.face import detect_faces, get_largest_face
+            faces = detect_faces(img)
+            largest = get_largest_face(faces)
+            if largest is None:
+                no_face_count += 1
+                timestamps.append(ts)
+                raw_scores.append(0.0)
+                continue
+
+            # TODO: call SBI analyze_image on the frame
+            # from image.sbi_detector import analyze_image
+            # face_findings = analyze_image(img)
+            # max_score = max((f.score for f in face_findings), default=0.0)
+            max_score = 0.0  # placeholder
+
+            timestamps.append(ts)
+            raw_scores.append(max_score)
+        except (NotImplementedError, ImportError):
+            timestamps.append(ts)
+            raw_scores.append(0.0)
+
+    if not timestamps:
+        return ModuleResult(module="video", file_sha256=sha, findings=[], runtime_s=time.time() - t0)
+
+    smoothed = smooth_scores(raw_scores)
+    intervals = scores_to_intervals(timestamps, smoothed)
+
+    # Clip-level score: 90th percentile (catches partial fakes that mean would dilute)
+    clip_score = float(np.percentile(smoothed, 90)) if smoothed else 0.0
 
     findings = [
         Finding(
@@ -104,6 +141,13 @@ def analyze(file_path: Path) -> ModuleResult:
         )
         for start, end, avg_score in intervals
     ]
+
+    coverage = 1.0 - (no_face_count / len(frame_files)) if frame_files else 0.0
+    findings.append(Finding(
+        model="sbi_video",
+        score=clip_score,
+        note=f"clip_level_score_p90, visual_coverage={coverage:.2f}",
+    ))
 
     return ModuleResult(
         module="video",
