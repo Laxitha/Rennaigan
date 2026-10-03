@@ -79,7 +79,10 @@ def main() -> None:
                 case = analyse(client, gateway, path)
                 if case is None:
                     continue
-                verdict = case["verdict"]
+                # A gateway from before verdicts existed only has the label.
+                verdict = case.get("verdict") or {
+                    "verdict": {"Low risk": "real", "High manipulation indicators": "deepfake"}.get(case["label"], "uncertain"),
+                    "confidence": 0, "source": "label"}
                 rows.append({"file": path.name, "truth": truth, "media": case["media"]["media_type"], "case": case["id"],
                              "verdict": verdict["verdict"], "confidence": verdict["confidence"], "source": verdict["source"],
                              "trust": case["trust_score"], "evidence": case["evidence_weight"], "runtime_s": case["runtime_s"],

@@ -11,7 +11,9 @@ DETECTORS = {
         "SBI (Self-Blended Images), EfficientNet-B4. Scores each detected face for blending boundaries left by "
         "face swaps and face reenactment. Score is P(fake) for that face. Trained on FaceForensics++ c23, so it "
         "tolerates moderate compression. It does not detect fully synthetic images (no blending boundary exists), "
-        "and heavy recompression, strong beauty filters, or very small faces raise false positives. A high score "
+        "and heavy recompression, strong beauty filters, or very small faces raise false positives. On still "
+        "photos it is unreliable alone: in testing it scored 7 of 17 genuine portraits above 0.5, so its "
+        "score is capped unless another detector agrees. A high score "
         "on one face in a group photo points at that face only."
     ),
     "sbi_video": (
@@ -20,23 +22,26 @@ DETECTORS = {
         "intervals are much stronger evidence than a single high frame. 'no_face_detected' means it had nothing "
         "to examine, which is not evidence of authenticity."
     ),
-    "univfd": (
-        "UnivFD (UniversalFakeDetect): a linear classifier on CLIP ViT-L/14 features of a 224 px centre crop. "
-        "Score is P(the image was produced by a generative model: GAN or diffusion). It looks at the whole image, "
-        "not faces. It does not detect face swaps or local edits in a real photo. Screenshots, illustrations, "
-        "heavy filters and very low resolution images are outside its training distribution and can score high "
-        "or low unpredictably."
+    "aigen": (
+        "AI-generated image detection: two public classifiers (a SwinV2 and a SigLIP model) averaged; the "
+        "score is P(the whole image was produced by a generative model). On 120 labelled test images covering "
+        "Stable Diffusion, DALL-E, ChatGPT, Gemini, Grok, Bing, Firefly and NightCafe, each separated real from "
+        "generated with AUC 0.92-0.98. The note gives each classifier's own score: when both are high the "
+        "evidence is strong, when they disagree the average sits near the middle and should be read as "
+        "undecided. It does not detect face swaps or local edits in a real photo. Screenshots, illustrations, "
+        "heavily filtered photos and scans are outside what it was tested on."
     ),
-    "univfd_video": (
-        "UnivFD applied to up to 16 frames spread across the video; the score is the median. This is the only "
-        "check for video that was generated outright rather than face-swapped. Video compression removes "
-        "part of the signal, so it is weaker than on still images: a high median with most frames above 0.5 "
-        "is meaningful, a median near 0.5 is not."
+    "aigen_video": (
+        "The AI-generated image detector applied to up to 16 frames spread across the video; the score is the "
+        "median. This is the only check for video that was generated outright rather than face-swapped. It has "
+        "not been measured on video: compression removes part of the signal, so a high median with most frames "
+        "above 0.5 is meaningful, a median near 0.5 is not."
     ),
     "trufor": (
         "TruFor: fuses RGB with a learned camera-noise fingerprint (Noiseprint++). Score is the image-level "
         "probability of local manipulation (splicing, copy-move, inpainting); its heatmap localizes the region. "
-        "It is not designed for fully synthetic images. Low-quality JPEGs, screenshots and images resized after "
+        "It is not designed for fully synthetic images, and in testing it flagged about one in six ordinary "
+        "web photos, so its score is capped unless another detector agrees. Low-quality JPEGs, screenshots and images resized after "
         "editing weaken it; a mid score with a diffuse heatmap is weak evidence, a compact hot region is strong."
     ),
     "lipforensics": (

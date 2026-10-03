@@ -18,7 +18,7 @@ from common.schema import Finding, ModuleResult
 from common.service import create_app
 from common.utils import file_sha256
 
-from . import frame_scorer, lipforensics_detector, syncnet_detector, univfd_frames
+from . import aigen_frames, frame_scorer, lipforensics_detector, syncnet_detector
 
 
 def analyze(file_path: Path) -> ModuleResult:
@@ -45,7 +45,7 @@ def analyze(file_path: Path) -> ModuleResult:
 
         jobs = {
             "sbi_video": lambda: frame_scorer.analyze(file_path, frames_dir, timestamps),
-            "univfd_video": lambda: univfd_frames.analyze(file_path, frames_dir, timestamps),
+            "aigen_video": lambda: aigen_frames.analyze(file_path, frames_dir, timestamps),
             "lipforensics": lambda: lipforensics_detector.analyze(file_path, sample, breaks),
             "syncnet": lambda: syncnet_detector.analyze(file_path, sample),
         }
@@ -89,8 +89,8 @@ def analyze(file_path: Path) -> ModuleResult:
 
 
 def warmup() -> None:
-    from image import sbi_detector, univfd_detector
-    for load in (sbi_detector.load_model, univfd_detector.load_model, lipforensics_detector.load_model):
+    from image import aigen_detector, sbi_detector
+    for load in (sbi_detector.load_model, aigen_detector.load_model, lipforensics_detector.load_model):
         try:
             load()
         except Exception:

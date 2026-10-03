@@ -46,7 +46,8 @@ def _no_data(f: dict) -> bool:
     return f["score"] == 0.0 and f["note"].startswith("no_")
 
 
-def module_score(findings: list[dict], mode: str, thresholds: dict | None = None, learned: bool = False) -> tuple[float, dict | None, int]:
+def module_score(findings: list[dict], mode: str, thresholds: dict | None = None, learned: bool = False,
+                 needs_corroboration: dict | None = None) -> tuple[float, dict | None, int]:
     """Strongest detector score in a module, the finding behind it, and how many of its
     detectors had nothing to examine."""
     thresholds = thresholds or {}
@@ -57,7 +58,8 @@ def module_score(findings: list[dict], mode: str, thresholds: dict | None = None
         if f["model"] == "ecapa" and mode != "identity":
             continue
         by_model.setdefault(f["model"], []).append(f)
-    best, top, empty = 0.0, None, 0
+    results: list[tuple[float, dict]] = []
+    empty = 0
     for group in by_model.values():
         scored = [f for f in group if not _no_data(f)]
         if not scored:
@@ -66,6 +68,16 @@ def module_score(findings: list[dict], mode: str, thresholds: dict | None = None
         score, finding = _model_score(scored)
         if learned:
             score = soften(score, float(thresholds.get(finding["model"], 0.5)))
+        results.append((score, finding))
+
+    # Some detectors raise alarms on ordinary media when used alone (measured: scripts/evaluate.py).
+    # Their score is capped unless a second detector in the module is also over its threshold.
+    over = {f["model"] for score, f in results if score >= float(thresholds.get(f["model"], 0.5))}
+    best, top = 0.0, None
+    for score, finding in results:
+        cap = (needs_corroboration or {}).get(finding["model"])
+        if cap is not None and not (over - {finding["model"]}):
+            score = min(score, float(cap))
         if score > best:
             best, top = score, finding
     return best, top, empty
@@ -82,14 +94,15 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
         run = runs.get(module)
         cov = run["coverage"] if run and run["info"]["status"] in ("ok", "degraded") else 0.0
         learned = module not in fusion_cfg.get("heuristic_modules", [])
-        raw, finding, empty = module_score(run["findings"], mode, cfg["thresholds"], learned) if cov > 0 else (0.0, None, 0)
+        raw, finding, empty = module_score(run["findings"], mode, cfg["thresholds"], learned, fusion_cfg.get("needs_corroboration")) if cov > 0 else (0.0, None, 0)
         # A detector with nothing to examine is not evidence that the file is clean.
         cov = max(0.0, cov - empty / max(len(MODULE_DETECTORS.get(module, [])), 1))
         coverage[module] = round(cov, 2)
         if cov <= 0:
             continue
         if module in fusion_cfg.get("heuristic_modules", []):
-            raw = min(raw, float(fusion_cfg.get("heuristic_score_cap", 1.0)))
+            cap = fusion_cfg.get("heuristic_score_cap", 1.0)
+            raw = min(raw, float(cap.get(module, 1.0) if isinstance(cap, dict) else cap))
         scores[module] = calibrate_score(raw, float(cfg["temperatures"].get(module, 1.0))) if raw > 0 else 0.0
         if finding and (top is None or scores[module] > top[0]):
             top = (scores[module], module, finding)

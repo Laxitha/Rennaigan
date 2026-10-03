@@ -250,7 +250,7 @@ def test_fusion_rule_based_modules_cannot_cap_trust(cfg):
 def test_fusion_detector_with_nothing_to_examine_is_not_clean_evidence(cfg):
     no_face = {"info": {"status": "ok"}, "coverage": 1.0, "findings": [
         {"model": m, "score": 0.0, "kind": "info", "note": n}
-        for m, n in (("sbi_video", "no_face_detected"), ("univfd_video", "no_frames"), ("lipforensics", "no_mouth_track"), ("syncnet", "no_face_track"))]}
+        for m, n in (("sbi_video", "no_face_detected"), ("aigen_video", "no_frames"), ("lipforensics", "no_mouth_track"), ("syncnet", "no_face_track"))]}
     out = fuse({"video": no_face}, ["video"], "public", cfg)
     assert out["module_coverage"]["video"] == 0 and out["trust_score"] is None
 

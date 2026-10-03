@@ -1,4 +1,4 @@
-"""Image forensics module: SBI (face swap), UnivFD (AI-generated) and TruFor (splicing), side by side."""
+"""Image forensics module: SBI (face swap), AI-generated detection and TruFor (splicing), side by side."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from common.schema import Finding, ModuleResult
 from common.service import create_app
 from common.utils import file_sha256
 
-from . import sbi_detector, trufor_detector, univfd_detector
+from . import aigen_detector, sbi_detector, trufor_detector
 
-DETECTORS = {"sbi": sbi_detector, "univfd": univfd_detector, "trufor": trufor_detector}
+DETECTORS = {"sbi": sbi_detector, "aigen": aigen_detector, "trufor": trufor_detector}
 
 
 def analyze(file_path: Path) -> ModuleResult:
@@ -52,7 +52,7 @@ def analyze(file_path: Path) -> ModuleResult:
 
 def warmup() -> None:
     from common.face import get_face_app
-    for load in (get_face_app, sbi_detector.load_model, univfd_detector.load_model, trufor_detector.load_model):
+    for load in (get_face_app, sbi_detector.load_model, aigen_detector.load_model, trufor_detector.load_model):
         try:
             load()
         except Exception:

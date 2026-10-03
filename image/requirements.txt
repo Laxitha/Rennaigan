@@ -9,5 +9,5 @@ numpy>=1.24
 insightface>=0.7
 onnxruntime-gpu>=1.15
 efficientnet_pytorch>=0.7
-open_clip_torch>=2.20
+transformers
 grad-cam>=1.4

@@ -13,8 +13,8 @@ ROOT = Path(__file__).resolve().parent.parent
 MODULES = ["image", "video", "audio", "metadata", "motion"]
 
 MODULE_DETECTORS = {
-    "image": ["sbi", "univfd", "trufor"],
-    "video": ["sbi_video", "univfd_video", "lipforensics", "syncnet"],
+    "image": ["sbi", "aigen", "trufor"],
+    "video": ["sbi_video", "aigen_video", "lipforensics", "syncnet"],
     "audio": ["ssl_aasist", "ecapa"],
     "metadata": ["exiftool", "ffprobe", "c2patool"],
     "motion": ["optical_flow", "head_pose", "smoothness", "identity_drift", "blink"],
@@ -63,7 +63,10 @@ DEFAULTS = {
         "signal_floor": 0.3,
         # Rule-based modules contribute to the average but cannot trigger the strong-signal cap.
         "heuristic_modules": ["motion", "metadata"],
-        "heuristic_score_cap": 0.4,
+        "heuristic_score_cap": {"motion": 0.4, "metadata": 0.2},
+        # Detectors that raise alarms on ordinary photos when used alone (measured with
+        # scripts/evaluate.py). Their score is capped unless a second detector agrees.
+        "needs_corroboration": {"sbi": 0.3, "trufor": 0.3},
     },
     "labels": {"low_risk": [70, 100], "review": [40, 69], "high_manipulation": [0, 39]},
     "weights_sha256": {},

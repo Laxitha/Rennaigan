@@ -6,7 +6,7 @@ Each module is an independent FastAPI microservice:
 
 | Module | Port | Endpoint | Models |
 |--------|------|----------|--------|
-| Image | 8001 | POST /analyze | SBI (face swap), UnivFD (AI-generated), TruFor (splicing) |
+| Image | 8001 | POST /analyze | SBI (face swap), AI-generated detection (two Hugging Face classifiers), TruFor (splicing) |
 | Video | 8002 | POST /analyze | SBI frame scoring, LipForensics, SyncNet |
 | Audio | 8003 | POST /analyze | SSL-AASIST (voice deepfake), ECAPA-TDNN (speaker verify) |
 | Metadata | 8004 | POST /analyze | Rule-based (exiftool, ffprobe, c2patool) |
@@ -75,7 +75,6 @@ python -m metadata.app  # → http://localhost:8004
 ```bash
 mkdir -p repos
 git clone https://github.com/mapooon/selfblendedimages.git repos/sbi
-git clone https://github.com/WisconsinAIVision/UniversalFakeDetect.git repos/univfd
 git clone https://github.com/grip-unina/TruFor.git repos/trufor
 git clone https://github.com/ahaliassos/LipForensics.git repos/lipforensics
 git clone https://github.com/joonson/syncnet_python.git repos/syncnet
@@ -85,13 +84,12 @@ git clone https://github.com/TakHemlata/SSL_Anti-spoofing.git repos/ssl_aasist
 ### 2. Download Weights
 
 ```bash
-mkdir -p weights/sbi weights/univfd weights/trufor
+mkdir -p weights/sbi weights/trufor
 
 # SBI — EfficientNet-B4 face swap detector
 # Download FFc23.tar from SBI repo releases → weights/sbi/FFc23.tar
 
-# UnivFD — CLIP-based AI image detector
-# Download fc_weights.pth from UnivFD repo → weights/univfd/fc_weights.pth
+# AI-generated image detectors download from Hugging Face on first use (pip install transformers)
 
 # TruFor — splicing detector
 # Download trufor.pth.tar from TruFor repo → weights/trufor/trufor.pth.tar
@@ -115,7 +113,7 @@ Each module can run in its own conda env (recommended for audio which needs PyTo
 
 **Image module:**
 ```bash
-pip install torch torchvision efficientnet_pytorch open_clip_torch \
+pip install torch torchvision efficientnet_pytorch transformers \
   opencv-python-headless Pillow insightface onnxruntime-gpu \
   pytorch-grad-cam fastapi uvicorn pydantic numpy
 ```
