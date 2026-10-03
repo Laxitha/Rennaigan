@@ -50,22 +50,23 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
 
     work = Path(tempfile.mkdtemp(prefix="rg_motion_"))
     try:
-        target = video25_path or build_sample(file_path, work / "sample25.mp4", windows, fps=FPS, max_height=480, audio=False)
-        timings["prepare"] = round(time.time() - t0, 2)
-
-        # No face in a spread of frames: none of the motion checks apply, so skip the full pass.
-        probe = cv2.VideoCapture(str(target))
+        # No face in a spread of frames of the upload: none of the motion checks apply, so the
+        # sample clip is not built and the full pass is skipped.
+        probe = cv2.VideoCapture(str(video25_path or file_path))
         total = int(probe.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
         samples = []
         for position in range(0, total, max(1, total // 10)):
             probe.set(cv2.CAP_PROP_POS_FRAMES, position)
             ok, frame = probe.read()
             if ok:
-                samples.append(frame)
+                samples.append(cv2.resize(frame, (frame.shape[1] * 480 // max(frame.shape[0], 1), 480)) if frame.shape[0] > 480 else frame)
         probe.release()
         if not any_face(samples):
             return ModuleResult(module="motion", file_sha256=sha, runtime_s=time.time() - t0, timings=timings,
                                 findings=[Finding(model="landmarks", score=0.0, note="no_face_detected: no face in the sampled frames")])
+
+        target = video25_path or build_sample(file_path, work / "sample25.mp4", windows, fps=FPS, max_height=480, audio=False)
+        timings["prepare"] = round(time.time() - t0, 2)
 
         cap = cv2.VideoCapture(str(target))
         landmarks, embeddings, flow_pairs = [], [], []
