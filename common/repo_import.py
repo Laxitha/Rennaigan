@@ -27,13 +27,15 @@ def repo_modules(path: Path, *names: str, keep: bool = False):
         return any(key == n or key.startswith(n + ".") for n in names)
 
     with _lock:
-        saved = {k: sys.modules.pop(k) for k in list(sys.modules) if owned(k)}
+        # .copy() is atomic; other threads may be importing while this runs
+        saved = {k: sys.modules.pop(k) for k in sys.modules.copy() if owned(k)}
         sys.path.insert(0, str(Path(path).resolve()))
         try:
             yield
         finally:
             sys.path.remove(str(Path(path).resolve()))
             if not keep:
-                for k in [k for k in sys.modules if owned(k)]:
-                    del sys.modules[k]
+                for k in sys.modules.copy():
+                    if owned(k):
+                        sys.modules.pop(k, None)
                 sys.modules.update(saved)
