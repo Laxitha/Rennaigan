@@ -27,9 +27,9 @@ const STEPS: Array<{ id: string; label: string; events: string[] }> = [
 
 function classify(file: File): MediaType | null {
   const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
-  if (file.type.startsWith('video/') || ['mp4', 'mov', 'webm', 'mkv', 'ts', 'avi'].includes(ext)) return 'video'
-  if (file.type.startsWith('audio/') || ['mp3', 'wav', 'm4a', 'flac', 'ogg'].includes(ext)) return 'audio'
-  if (file.type.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff', 'heic'].includes(ext)) {
+  if (file.type.startsWith('video/') || ['mp4', 'mov', 'webm', 'mkv', 'ts', 'avi', 'm4v', '3gp', 'mpg', 'mpeg', 'wmv', 'flv', 'mts', 'm2ts'].includes(ext)) return 'video'
+  if (file.type.startsWith('audio/') || ['mp3', 'wav', 'm4a', 'flac', 'ogg', 'aac', 'opus', 'wma', 'aiff', 'amr'].includes(ext)) return 'audio'
+  if (file.type.startsWith('image/') || ['jpg', 'jpeg', 'jfif', 'png', 'webp', 'tif', 'tiff', 'bmp', 'heic'].includes(ext)) {
     return /screen ?shot|capture|screen/i.test(file.name) ? 'screenshot' : 'image'
   }
   return null
@@ -195,7 +195,7 @@ export default function Analyze() {
           <ErrorState
             title="Analysis could not be completed"
             body={errorDetails || 'The media processing pipeline encountered an error.'}
-            cause={rejected ? 'Unsupported codec or file format.' : 'Gateway or detector error.'}
+            cause={rejected ? 'Unsupported codec or file format.' : 'The gateway reported the problem above.'}
             onRetry={reset}
             details={rejected ? `File: ${rejected.name}\nReported type: ${rejected.mime}\nAccepted: video, audio, image, screenshot` : errorDetails || undefined}
             secondary={<GlassButton onClick={reset}>Try another file</GlassButton>}

@@ -79,6 +79,12 @@ export const absUrl = (url: string, path: string | null | undefined) => (path &&
 /* -------------------------------------------------------------------- errors */
 
 export type BackendErrorKind = 'unconfigured' | 'unreachable' | 'timeout' | 'http' | 'invalid' | 'aborted'
+/** The gateway's own explanation of an error response, when it sent one. */
+function reasonFrom(body: string, fallback: string): string {
+  try { const j = JSON.parse(body); if (typeof j.detail === 'string' && j.detail) return j.detail } catch { /* not JSON */ }
+  return fallback
+}
+
 export class BackendError extends Error {
   readonly kind: BackendErrorKind
   readonly status?: number
@@ -266,7 +272,7 @@ function putChunk(target: string, chunk: Blob, signal: AbortSignal | undefined, 
     xhr.upload.onprogress = (e) => onBytes(e.loaded)
     xhr.onload = () => (xhr.status >= 200 && xhr.status < 300
       ? resolve()
-      : reject(new BackendError('http', `Upload of a part returned ${xhr.status}`, xhr.status, xhr.responseText)))
+      : reject(new BackendError('http', reasonFrom(xhr.responseText, `Upload of a part returned ${xhr.status}`), xhr.status, xhr.responseText)))
     xhr.onerror = () => reject(new BackendError('unreachable', `Network error contacting ${hostOf(target)}`))
     xhr.onabort = () => reject(new BackendError('aborted', 'Analysis cancelled'))
     signal?.addEventListener('abort', () => xhr.abort(), { once: true })
@@ -284,7 +290,7 @@ async function analyzeFileChunked(url: string, file: File, opts: AnalyzeOptions)
       throw new BackendError('unreachable', `Network error contacting ${hostOf(url)}: ${e instanceof Error ? e.message : String(e)}`)
     }
     const text = await res.text()
-    if (!res.ok) throw new BackendError('http', `${what} returned ${res.status}`, res.status, text)
+    if (!res.ok) throw new BackendError('http', reasonFrom(text, `${what} returned ${res.status}`), res.status, text)
     return text
   }
   const json = { 'Content-Type': 'application/json', Accept: 'application/json' }
@@ -338,7 +344,7 @@ export function analyzeFile(url: string, file: File, opts: AnalyzeOptions = {}):
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) opts.onUploadProgress?.(e.loaded, e.total) }
     xhr.upload.onload = () => { opts.onUploaded?.(); stop = watchProgress(url, progressId, opts.onProgress) }
     xhr.onload = () => {
-      if (xhr.status < 200 || xhr.status >= 300) { reject(new BackendError('http', `POST /analyze returned ${xhr.status}`, xhr.status, xhr.responseText)); return }
+      if (xhr.status < 200 || xhr.status >= 300) { reject(new BackendError('http', reasonFrom(xhr.responseText, `POST /analyze returned ${xhr.status}`), xhr.status, xhr.responseText)); return }
       try { resolve(parseCase(xhr.status, xhr.responseText, 'POST /analyze')) } catch (e) { reject(e) }
     }
     xhr.onerror = () => reject(new BackendError('unreachable', `Network error contacting ${hostOf(url)}`))

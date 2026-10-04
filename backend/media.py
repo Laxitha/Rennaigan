@@ -20,11 +20,11 @@ except ImportError:  # dissection still works, without face boxes
     cv2 = None
 
 ALLOWED_EXT = {
-    "mp4", "mov", "webm", "mkv", "ts", "avi", "m4v",
-    "mp3", "wav", "m4a", "flac", "ogg", "aac",
-    "jpg", "jpeg", "png", "webp", "tif", "tiff", "bmp", "heic",
+    "mp4", "mov", "webm", "mkv", "ts", "avi", "m4v", "3gp", "mpg", "mpeg", "wmv", "flv", "mts", "m2ts",
+    "mp3", "wav", "m4a", "flac", "ogg", "aac", "opus", "wma", "aiff", "amr",
+    "jpg", "jpeg", "jfif", "png", "webp", "tif", "tiff", "bmp", "heic",
 }
-IMAGE_EXT = {"jpg", "jpeg", "png", "webp", "tif", "tiff", "bmp", "heic"}
+IMAGE_EXT = {"jpg", "jpeg", "jfif", "png", "webp", "tif", "tiff", "bmp", "heic"}
 STILL_CODECS = {"mjpeg", "png", "webp", "bmp", "tiff", "gif", "heic", "hevc_still"}
 
 
@@ -113,7 +113,8 @@ def probe(path: Path, original_name: str) -> dict:
         info["media_type"] = "unknown"
 
     if info["media_type"] == "unknown":
-        raise UnsupportedMedia("The file could not be decoded as an image, video or audio file.")
+        raise UnsupportedMedia("The file could not be read as an image, video or audio file. It may be damaged, "
+                               "incomplete, or a different kind of file with a media extension.")
     if info["media_type"] == "image" and re.search(r"screen ?shot|capture|screen", original_name, re.I):
         info["media_type"] = "screenshot"
     return info

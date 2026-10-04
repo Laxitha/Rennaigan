@@ -49,6 +49,8 @@ class ReviewBody(BaseModel):
     analyst: str = Field(default="analyst", min_length=1, max_length=120)
 
 
+SUPPORTED = ("video (mp4, mov, webm, mkv, avi, m4v, 3gp, mpg, wmv, flv), audio (mp3, wav, m4a, flac, ogg, aac, opus, wma) "
+             "and images (jpg, png, webp, tif, bmp, heic)")
 PROGRESS_ID = re.compile(r"^[0-9a-f]{16,32}$")
 
 
@@ -150,7 +152,7 @@ def create_app(cfg: dict | None = None) -> FastAPI:
         name = media.safe_name(upload.filename or "upload")
         ext = Path(name).suffix.lower().lstrip(".")
         if ext not in media.ALLOWED_EXT:
-            raise HTTPException(415, f"Files of type .{ext or '?'} are not supported.")
+            raise HTTPException(415, f"Files of type .{ext or '?'} are not supported. Supported: {SUPPORTED}.")
         tmp = tmp_dir / f"{secrets.token_hex(8)}.{ext}"
         digest, size = hashlib.sha256(), 0
         try:
@@ -443,7 +445,7 @@ def create_app(cfg: dict | None = None) -> FastAPI:
         name = media.safe_name(body.name)
         ext = Path(name).suffix.lower().lstrip(".")
         if ext not in media.ALLOWED_EXT:
-            raise HTTPException(415, f"Files of type .{ext or '?'} are not supported.")
+            raise HTTPException(415, f"Files of type .{ext or '?'} are not supported. Supported: {SUPPORTED}.")
         if body.size > max_bytes:
             raise HTTPException(413, f"File is larger than the {max_bytes // (1024 * 1024)} MB limit.")
         if body.size <= 0:
