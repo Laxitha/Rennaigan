@@ -109,6 +109,21 @@ def test_lip_sync_alone_does_not_decide(cfg):
     assert fuse(runs, ["video", "audio", "motion", "metadata"], "public", cfg)["label"] == "High manipulation indicators"
 
 
+def test_review_frames_start_with_the_flagged_moments():
+    from backend.assess import review_moments
+    doc = {"media": {"duration_s": 60.0}, "findings": [
+        {"module": "video", "model": "sbi_video", "kind": "signal", "score": 0.9, "start": 10.0, "end": 12.0, "note": "face_swap_interval"},
+        {"module": "video", "model": "sbi_video", "kind": "signal", "score": 0.8, "start": 10.5, "end": 11.5, "note": "face_swap_interval"},
+        {"module": "video", "model": "aigen_video", "kind": "signal", "score": 0.7, "start": None, "end": None,
+         "note": "clip_level: ai_generated_frames, median of 16 frames, 60% at or above 0.5, highest 0.98 at 41.0 s"},
+        {"module": "audio", "model": "voice", "kind": "signal", "score": 0.95, "start": 3.0, "end": 8.0, "note": "synthetic_speech_detected"},
+    ]}
+    moments = review_moments(doc)
+    assert len(moments) == 6 and [m["at_s"] for m in moments] == sorted(m["at_s"] for m in moments)
+    flagged = [m["at_s"] for m in moments if "scored" in m["why"]]
+    assert flagged == [11.0, 41.0]  # the overlapping interval and the audio finding add no frame
+
+
 def test_clip_too_short_to_judge_is_uncertain(cfg):
     runs = {"audio": {"info": {"status": "ok"}, "coverage": 1.0, "findings": [
                 {"model": "voice", "score": 0.0, "kind": "info", "note": "no_usable_speech: 1.2 s of audio is too short to judge"}]},
@@ -315,7 +330,7 @@ def test_claude_assessment_is_recorded_and_sealed(client, samples, monkeypatch):
     from backend import assess
     seen = {}
 
-    async def fake_assess(doc, earlier, model, images=None):
+    async def fake_assess(doc, earlier, model, images=None, frames=None):
         seen["evidence"] = assess.build_evidence(doc, earlier)
         return {"verdict": "deepfake", "confidence": 71, "headline": "Voice detector flags synthetic speech.",
                 "explanation": "e", "evidence": [], "caveats": [], "recommendation": "r", "model": model,
@@ -335,7 +350,7 @@ def test_claude_assessment_is_recorded_and_sealed(client, samples, monkeypatch):
     assert [e["action"] for e in again["audit"]][-2:] == ["assessment.generated", "case.sealed"]
     assert client.get(f"/cases/{case['id']}/audit/verify").json()["intact"]
 
-    async def failing(doc, earlier, model, images=None):
+    async def failing(doc, earlier, model, images=None, frames=None):
         raise RuntimeError("rate limited")
     monkeypatch.setattr(assess, "assess", failing)
     failed = upload(client, samples / "photo.jpg").json()

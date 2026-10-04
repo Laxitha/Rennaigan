@@ -110,6 +110,7 @@ def analyze(file_path: Path) -> ModuleResult:
             findings.append(f)
         artifacts.update(result.artifacts)
         weights.update(result.weights_sha256)
+        timings.update({f"{name}.{stage}": seconds for stage, seconds in (result.timings or {}).items()})
 
     return ModuleResult(
         module="video",

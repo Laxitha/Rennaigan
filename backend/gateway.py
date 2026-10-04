@@ -330,12 +330,19 @@ def create_app(cfg: dict | None = None) -> FastAPI:
         t0 = time.monotonic()
         earlier = [c for c in st.list_cases(200)[1] if c["id"] != doc["id"]]
         try:
-            images = []
+            images, frames = [], None
             if assessment_cfg["send_media"]:
                 source = cases_dir / doc["id"] / "media" / doc["file"]["name"]
-                if source.is_file():
+                if source.is_file() and doc["media"]["media_type"] == "video":
+                    # Frames at the moments the detectors flagged, plus an even spread.
+                    moments = assess.review_moments(doc)
+                    shots = await asyncio.to_thread(media.preview_images, source, doc["media"], times=[m["at_s"] for m in moments])
+                    frames = [m for m, shot in zip(moments, shots) if shot]
+                    images = [shot for shot in shots if shot]
+                elif source.is_file():
                     images = await asyncio.to_thread(media.preview_images, source, doc["media"])
-            result = await asyncio.wait_for(assess.assess(doc, earlier, assessment_cfg["model"], images), timeout=float(assessment_cfg["timeout_s"]))
+            result = await asyncio.wait_for(assess.assess(doc, earlier, assessment_cfg["model"], images, frames),
+                                            timeout=float(assessment_cfg["timeout_s"]))
         except Exception as exc:
             doc["assessment_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
             st.append_audit(doc["id"], "assessment.failed", doc["assessment_error"], actor=assessment_cfg["model"],

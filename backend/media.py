@@ -256,9 +256,13 @@ def zip_frames(result: dict, frames_root: Path, dest: Path) -> Path:
     return dest
 
 
-def preview_images(path: Path, info: dict, frames: int = 4, max_side: int = 1280) -> list[bytes]:
-    """JPEG previews for a visual review: the image itself, or frames spread across a video."""
-    out: list[bytes] = []
+def preview_images(path: Path, info: dict, frames: int = 4, max_side: int = 1280, times: list[float] | None = None) -> list[bytes | None]:
+    """JPEG previews for a visual review: the image itself, or video frames.
+
+    Video frames are taken at `times` (seconds) when given, else spread evenly. With `times`
+    the result has one entry per time, None where that frame could not be read.
+    """
+    out: list[bytes | None] = []
     try:
         if info["media_type"] in ("image", "screenshot"):
             with Image.open(path) as img:
@@ -268,14 +272,15 @@ def preview_images(path: Path, info: dict, frames: int = 4, max_side: int = 1280
                 img.save(buf, "JPEG", quality=90)
                 out.append(buf.getvalue())
         elif info["media_type"] == "video" and info.get("duration_s"):
-            for k in range(frames):
-                at = info["duration_s"] * (2 * k + 1) / (2 * frames)
+            for at in times if times is not None else [info["duration_s"] * (2 * k + 1) / (2 * frames) for k in range(frames)]:
                 shot = subprocess.run(
                     ["ffmpeg", "-loglevel", "error", "-ss", f"{at:.2f}", "-i", str(path), "-frames:v", "1",
                      "-vf", f"scale='min({max_side},iw)':-2", "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", "3", "-"],
                     capture_output=True, timeout=60)
                 if shot.returncode == 0 and shot.stdout:
                     out.append(shot.stdout)
+                elif times is not None:
+                    out.append(None)
     except Exception:
         return []
     return out

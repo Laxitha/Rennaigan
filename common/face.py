@@ -37,27 +37,34 @@ YUNET = None
 YUNET_LOCK = threading.Lock()
 
 
-def detect_faces_yunet(image: np.ndarray, det_thresh: float = 0.6) -> list[dict]:
-    """OpenCV YuNet face boxes. No identity embedding."""
+def detect_faces_yunet(image: np.ndarray, det_thresh: float = 0.6, max_side: int | None = None) -> list[dict]:
+    """OpenCV YuNet face boxes. No identity embedding.
+
+    With `max_side`, the detector runs on a copy scaled down to that long side and the boxes are
+    mapped back: its cost grows with the pixel count. Small or borderline faces can be missed
+    on the smaller copy, so this is for callers that only need the main face.
+    """
     global YUNET
     h, w = image.shape[:2]
+    scale = min(1.0, max_side / max(h, w, 1)) if max_side else 1.0
+    small = cv2.resize(image, (max(int(round(w * scale)), 1), max(int(round(h * scale)), 1)), interpolation=cv2.INTER_AREA) if scale < 1.0 else image
     with YUNET_LOCK:  # one detector object, set to the image size before each call
         if YUNET is None:
             if not YUNET_PATH.exists():
                 YUNET_PATH.parent.mkdir(parents=True, exist_ok=True)
                 urllib.request.urlretrieve(YUNET_URL, YUNET_PATH)
             YUNET = cv2.FaceDetectorYN.create(str(YUNET_PATH), "", (320, 320), det_thresh, 0.3, 50)
-        YUNET.setInputSize((w, h))
-        _, found = YUNET.detect(image)
+        YUNET.setInputSize((small.shape[1], small.shape[0]))
+        _, found = YUNET.detect(small)
     results = []
     for row in found if found is not None else []:
-        x, y, bw, bh = (int(v) for v in row[:4])
+        x, y, bw, bh = (int(round(v / scale)) for v in row[:4])
         if min(bw, bh) < MIN_FACE_PX:
             continue
         results.append({
             "box": [max(x, 0), max(y, 0), bw, bh],
             "score": float(row[14]),
-            "landmarks": row[4:14].reshape(5, 2).tolist(),
+            "landmarks": (row[4:14].reshape(5, 2) / scale).tolist(),
             "embedding": None,
         })
     return results

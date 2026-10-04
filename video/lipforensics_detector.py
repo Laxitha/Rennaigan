@@ -76,7 +76,7 @@ def load_model():
     global PREPROCESS
     with repo_modules(REPO_PATH, "models", "preprocessing"):
         from models.spatiotemporal_net import Lipreading
-        from preprocessing.utils import apply_transform, cut_patch, warp_img
+        from preprocessing.utils import cut_patch
     PREPROCESS = (apply_transform, cut_patch, warp_img)
 
     # Built here rather than through the repo's get_model(), which assumes its own working
@@ -96,18 +96,43 @@ def load_model():
     return MODEL
 
 
-def _landmarks(frame_rgb: np.ndarray) -> np.ndarray | None:
+def apply_transform(transform, img: np.ndarray, std_size: tuple[int, int]) -> np.ndarray:
+    """The repo's apply_transform, with OpenCV doing the resampling.
+
+    The repo warps with scikit-image, which converts the whole frame to float64 first: about
+    75 ms a frame, and it was most of this detector's run time. cv2.warpAffine applies the same
+    similarity transform with the same bilinear sampling in under a millisecond; on a test
+    frame the two outputs differ by 0.5 grey levels on average and 3 at most.
+    """
+    return cv2.warpAffine(img, transform.params[:2], (std_size[1], std_size[0]), flags=cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+
+def warp_img(src: np.ndarray, dst: np.ndarray, img: np.ndarray, std_size: tuple[int, int]):
+    """The repo's warp_img: align the frame so its stable landmarks match the mean face."""
+    from skimage import transform as tf
+    tform = tf.estimate_transform("similarity", src, dst)
+    return apply_transform(tform, img, std_size), tform
+
+
+def _landmarks(frame_rgb: np.ndarray, spent: dict | None = None) -> np.ndarray | None:
     """68 landmarks of the largest face.
 
     The face box comes from YuNet, which runs in a few milliseconds; the landmark network then
     only has to look at that box. face_alignment's own S3FD detector on every frame was the
     slowest step of the whole pipeline.
     """
-    faces = detect_faces_yunet(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
-    if not faces:
-        return None
-    x, y, w, h = max(faces, key=lambda f: f["box"][2] * f["box"][3])["box"]
-    found = LANDMARKER.get_landmarks_from_image(frame_rgb, detected_faces=[[x, y, x + w, y + h]])
+    started = time.time()
+    # Only the largest face is used, so the detector can look at a smaller copy of the frame.
+    faces = detect_faces_yunet(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR), max_side=640)
+    located = time.time()
+    found = None
+    if faces:
+        x, y, w, h = max(faces, key=lambda f: f["box"][2] * f["box"][3])["box"]
+        found = LANDMARKER.get_landmarks_from_image(frame_rgb, detected_faces=[[x, y, x + w, y + h]])
+    if spent is not None:
+        spent["face_boxes"] = spent.get("face_boxes", 0.0) + located - started
+        spent["landmarks"] = spent.get("landmarks", 0.0) + time.time() - located
     return found[0][:, :2] if found else None
 
 
@@ -146,7 +171,7 @@ class _RunCropper:
         return self.crops
 
 
-def extract_mouth_segments(video25: Path, breaks: frozenset[int] = frozenset()) -> list[tuple[int, np.ndarray]]:
+def extract_mouth_segments(video25: Path, breaks: frozenset[int] = frozenset(), spent: dict | None = None) -> list[tuple[int, np.ndarray]]:
     """Aligned 96x96 grayscale mouth crops, as runs of consecutive frames with a visible face.
 
     Returns [(first_frame_index, array of shape (n, 96, 96))] for runs of at least one clip.
@@ -190,7 +215,7 @@ def extract_mouth_segments(video25: Path, breaks: frozenset[int] = frozenset()) 
             close()
             previous, waiting = None, []
         if previous is None or len(waiting) == LANDMARK_EVERY - 1:
-            landmarks = _landmarks(rgb)
+            landmarks = _landmarks(rgb, spent)
             if landmarks is None:
                 close()
                 previous, waiting = None, []
@@ -221,7 +246,12 @@ def analyze(file_path: Path, video25_path: Path | None = None, breaks: frozenset
                  "-vf", "scale=-2:'min(720,ih)'", "-r", str(FPS), "-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", str(video25)],
                 check=True, capture_output=True, timeout=300,
             )
-        segments = extract_mouth_segments(video25, breaks)
+        spent: dict[str, float] = {}
+        started = time.time()
+        segments = extract_mouth_segments(video25, breaks, spent)
+        # what is left of the pass is decoding the clip and cutting the mouth crops
+        spent["decode_and_crop"] = time.time() - started - sum(spent.values())
+    scoring = time.time()
 
     findings: list[Finding] = []
     logits: list[float] = []
@@ -263,4 +293,5 @@ def analyze(file_path: Path, video25_path: Path | None = None, breaks: frozenset
         findings=findings,
         weights_sha256={"lipforensics": weights_sha256(_weights_path())},
         runtime_s=time.time() - t0,
+        timings={**{k: round(v, 2) for k, v in spent.items()}, "model": round(time.time() - scoring, 2)},
     )

@@ -78,12 +78,16 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
             if not ok:
                 break
             frame_shape = frame_shape or frame.shape
+            mark = time.time()
             landmarks.append(get_landmarks(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
+            timings["landmarks"] = timings.get("landmarks", 0.0) + time.time() - mark
 
             if index % FACE_EVERY == 0:
                 # Boxes are cheap; the identity embedding is the slow part, so it is taken once a second.
                 want_embedding = index % EMBED_EVERY == 0
+                mark = time.time()
                 face = get_largest_face(detect_faces(frame, embeddings=want_embedding))
+                timings["faces"] = timings.get("faces", 0.0) + time.time() - mark
                 box = face["box"] if face else None
                 if want_embedding:
                     embeddings.append((index, face.get("embedding") if face else None))
@@ -94,6 +98,7 @@ def analyze(file_path: Path, video25_path: Path | None = None) -> ModuleResult:
             index += 1
         cap.release()
         timings["landmarks_and_faces"] = round(time.time() - started, 2)
+        timings["landmarks"], timings["faces"] = round(timings.get("landmarks", 0.0), 2), round(timings.get("faces", 0.0), 2)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

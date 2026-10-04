@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from collections import defaultdict
 
 import numpy as np
@@ -53,6 +54,10 @@ than its surroundings. Report only defects you can point to. Your visual impress
 evidence than a trained detector: it can raise or lower confidence and can break a tie, but an \
 image that merely looks polished, or looks ordinary, proves nothing either way. List what you \
 saw as its own evidence item named "visual review".
+- For a video, "attached_frames" lists each attached image in order with its time in the video \
+and why it was chosen. Frames chosen because a detector scored that moment highly deserve the \
+closest look: say whether what you see there supports the detector or not, and refer to moments by \
+their time.
 - The fused trust score is the quantitative baseline. You may depart from it, but say why, citing \
 the specific findings.
 
@@ -70,7 +75,8 @@ SCHEMA = {
         "verdict": {"type": "string", "enum": ["real", "deepfake", "uncertain"]},
         "confidence": {"type": "integer", "description": "0-100: likelihood the chosen verdict is correct"},
         "headline": {"type": "string", "description": "One sentence stating the verdict and the main reason"},
-        "explanation": {"type": "string", "description": "A short paragraph a non-expert can follow"},
+        "explanation": {"type": "string", "description": "One or two short paragraphs a non-expert can follow: what was "
+                        "tested, what was found and where in the file, and what that means"},
         "evidence": {
             "type": "array",
             "items": {
@@ -125,6 +131,35 @@ def fusion_verdict(fused: dict, cfg: dict) -> dict:
     return {"verdict": verdict, "confidence": confidence, "source": "fusion", "headline": headline}
 
 
+AT_TIME = re.compile(r"highest [\d.]+ at ([\d.]+) s")
+
+
+def review_moments(doc: dict, count: int = 6) -> list[dict]:
+    """Which video frames the visual review should look at, and why.
+
+    The moments the detectors scored highest come first, so the review looks where the
+    evidence is; the rest are spread evenly so it also sees what the video looks like overall.
+    """
+    duration = float(doc["media"].get("duration_s") or 0)
+    if duration <= 0:
+        return []
+    flagged = []
+    for f in sorted(doc["findings"], key=lambda f: -f["score"]):
+        if f["kind"] != "signal" or f["module"] not in ("video", "motion"):
+            continue
+        at = (f["start"] + (f["end"] if f.get("end") is not None else f["start"])) / 2 if f.get("start") is not None else None
+        if at is None and (found := AT_TIME.search(f["note"])):
+            at = float(found.group(1))
+        if at is None or not 0 <= at <= duration or any(abs(at - m["at_s"]) < 2.0 for m in flagged):
+            continue
+        flagged.append({"at_s": round(at, 2), "why": f"{f['model']} scored {f['score']:.2f} here ({f['note'][:80]})"})
+        if len(flagged) == count // 2:
+            break
+    spread = [{"at_s": round(duration * (2 * k + 1) / (2 * (count - len(flagged))), 2), "why": "evenly spaced overview frame"}
+              for k in range(count - len(flagged))]
+    return sorted(flagged + spread, key=lambda m: m["at_s"])
+
+
 def _summarize_findings(findings: list[dict]) -> list[dict]:
     groups: dict[tuple, list[dict]] = defaultdict(list)
     for f in findings:
@@ -173,13 +208,16 @@ def build_evidence(doc: dict, earlier_cases: list[dict]) -> dict:
     }
 
 
-async def assess(doc: dict, earlier_cases: list[dict], model: str = DEFAULT_MODEL, images: list[bytes] | None = None) -> dict:
+async def assess(doc: dict, earlier_cases: list[dict], model: str = DEFAULT_MODEL, images: list[bytes] | None = None,
+                 frames: list[dict] | None = None) -> dict:
     """Ask Claude for a reasoned verdict. Raises on API failure; the caller records the error."""
     import anthropic
 
     evidence = build_evidence(doc, earlier_cases)
     evidence["media_attached"] = (f"{len(images)} image(s): the file itself or frames spread across the video" if images
                                   else "none: reason from the detector findings only")
+    if images and frames:
+        evidence["attached_frames"] = [{"image": i + 1, **frame} for i, frame in enumerate(frames)]
     content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                             "data": base64.standard_b64encode(img).decode()}} for img in images or []]
     content.append({"type": "text", "text": json.dumps(evidence, indent=1)})
