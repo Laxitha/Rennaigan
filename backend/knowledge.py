@@ -17,8 +17,8 @@ DETECTORS = {
         "on one face in a group photo points at that face only."
     ),
     "sbi_video": (
-        "SBI applied to frames sampled at 3 fps, smoothed over time. Interval findings mark stretches where the "
-        "face-swap score stayed high; the clip-level finding is the 90th percentile of frame scores. Sustained "
+        "SBI applied to frames sampled across the whole video, smoothed over time. Interval findings mark stretches "
+        "where the face-swap score stayed high; the clip-level finding is the median over frames with a face. Sustained "
         "intervals are much stronger evidence than a single high frame. 'no_face_detected' means it had nothing "
         "to examine, which is not evidence of authenticity."
     ),
@@ -55,8 +55,9 @@ DETECTORS = {
         "SyncNet: measures whether the audio matches the lip movement of each tracked face. It reports an offset "
         "in frames and a confidence. Confidence below 3 or an offset above 3 frames (120 ms) is flagged. Low "
         "confidence also happens when the visible person is not the speaker (voice-over, interviewer off "
-        "screen, music), so on its own it is weak evidence and is kept below the strong-signal level. High "
-        "confidence with near-zero offset supports genuine, undubbed speech."
+        "screen, music), so on its own it cannot decide a verdict: its score is capped unless another detector "
+        "agrees, and it only runs when another detector has already flagged the video ('no_lip_sync_needed' "
+        "means it was not run). High confidence with near-zero offset supports genuine, undubbed speech."
     ),
     "voice": (
         "Synthetic-voice detector: a wav2vec 2.0 XLS-R classifier scoring 5-second windows; score is "
@@ -111,8 +112,11 @@ DETECTORS = {
 GENERAL = (
     "How the fused result is built. Each module's score is its strongest detector; modules are averaged by "
     "configured weight, scaled by how much of the module actually ran. Trust score = 100 x (1 - weighted score). "
-    "A learned module at or above the strong-signal level caps the trust score. Rule-based modules (motion, "
-    "metadata) are capped and cannot trigger that rule. Evidence weight is the share of applicable detector "
+    "For a video, the stronger of the video and audio modules stands on its own and is not averaged down by "
+    "the other. A learned module at or above the strong-signal level sets the trust score directly. Some "
+    "detectors that raise alarms on ordinary media are capped unless a second detector agrees. Rule-based "
+    "modules (motion, metadata) are capped and cannot trigger these rules. If the detectors that carry the "
+    "verdict for the file type had nothing they could judge, no trust score is computed. Evidence weight is the share of applicable detector "
     "weight that produced evidence; below the configured threshold the result is inconclusive. Detector "
     "thresholds are the published defaults and have not been calibrated on this deployment's own data, so "
     "scores near 0.5 deserve less weight than scores near 0 or 1. Different detectors target different "
