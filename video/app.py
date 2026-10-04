@@ -25,6 +25,9 @@ from common.utils import file_sha256
 from . import aigen_frames, frame_scorer, lipforensics_detector, syncnet_detector
 
 
+LIP_SYNC_TRIGGER = 0.6  # the level at which fusion treats another detector as agreeing
+
+
 def analyze(file_path: Path) -> ModuleResult:
     t0 = time.time()
     sha = file_sha256(file_path)
@@ -75,8 +78,22 @@ def analyze(file_path: Path) -> ModuleResult:
             except Exception as exc:
                 return name, exc, time.time() - started
 
-        with ThreadPoolExecutor(len(jobs)) as pool:
-            outcomes = list(pool.map(run, jobs))
+        # Lip sync is the most expensive check, and on its own it cannot decide a verdict
+        # (voice-over and off-screen speakers are out of sync in genuine videos): fusion only
+        # counts it when another detector has flagged the file. So it runs only in that case,
+        # after the others, instead of competing with them for the CPU on every upload.
+        first = [name for name in jobs if name != "syncnet"]
+        with ThreadPoolExecutor(max(len(first), 1)) as pool:
+            outcomes = list(pool.map(run, first))
+        if "syncnet" in jobs:
+            flagged = any(
+                f.score >= LIP_SYNC_TRIGGER and (f.note.startswith(("clip_level", "video_level")) or "interval" in f.note.split(":")[0])
+                for _, result, _ in outcomes if not isinstance(result, Exception) for f in result.findings)
+            if flagged:
+                outcomes.append(run("syncnet"))
+            else:
+                skipped.append(Finding(model="syncnet", score=0.0,
+                                       note="no_lip_sync_needed: not run, because no other detector flagged this video and lip sync alone cannot decide"))
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

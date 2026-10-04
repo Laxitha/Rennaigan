@@ -430,4 +430,4 @@ def test_faceless_video_is_judged_on_the_checks_that_apply(cfg):
     audio = {"info": {"status": "ok"}, "coverage": 1.0, "findings": [nothing("voice", "no_speech: silent")]}
     out = fuse({"video": video, "audio": audio, "motion": motion, "metadata": run_of("ok", 1.0)}, ["video", "audio", "motion", "metadata"], "public", cfg)
     assert out["label"] == "Low risk" and out["evidence_weight"] == 1.0
-    assert out["module_coverage"]["video"] == 1.0 and "nothing to examine" in out["label_reason"]
+    assert out["module_coverage"]["video"] == 1.0 and "did not apply" in out["label_reason"]

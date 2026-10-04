@@ -188,7 +188,7 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
     else:
         label = "High manipulation indicators"
     if idle:
-        reasons.append(f"Checks that had nothing to examine in this file (no face or no speech): {', '.join(sorted(idle))}.")
+        reasons.append(f"Checks that did not apply to this file: {', '.join(sorted(idle))}.")
     if label not in ("Inconclusive", "High manipulation indicators") and missing:
         reasons.append(f"Incomplete modules: {', '.join(missing)}.")
 
