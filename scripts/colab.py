@@ -129,7 +129,6 @@ def restart() -> None:
             continue
         if health["services_up"] == health["services_total"]:
             break
-    wait_for_models()
     status()
 
 
@@ -193,6 +192,8 @@ def up() -> None:
     """Everything in one go: restart the backend, then open the tunnel."""
     restart()
     tunnel()
+    # The address is printed first; the wait only tells you when uploads will run at full speed.
+    wait_for_models()
 
 
 if __name__ == "__main__":
