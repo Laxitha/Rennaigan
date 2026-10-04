@@ -124,6 +124,13 @@ def test_review_frames_start_with_the_flagged_moments():
     assert flagged == [11.0, 41.0]  # the overlapping interval and the audio finding add no frame
 
 
+def test_long_file_names_keep_their_extension():
+    from backend.media import safe_name
+    long = "vidssave.com_shorts_media_7-4qeinx930_" + "alia-bhatt-__-deepfake-video-__-2-crore-views-" * 4 + "001_.mp4"
+    assert len(long) > 120 and len(safe_name(long)) <= 120 and safe_name(long).endswith(".mp4")
+    assert safe_name("clip.mp4") == "clip.mp4" and safe_name("../../etc/passwd") == "passwd"
+
+
 def test_clip_too_short_to_judge_is_uncertain(cfg):
     runs = {"audio": {"info": {"status": "ok"}, "coverage": 1.0, "findings": [
                 {"model": "voice", "score": 0.0, "kind": "info", "note": "no_usable_speech: 1.2 s of audio is too short to judge"}]},

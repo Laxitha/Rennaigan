@@ -36,6 +36,10 @@ def safe_name(name: str) -> str:
     """Base name with anything outside a conservative character set replaced."""
     name = Path(name.replace("\\", "/")).name
     name = re.sub(r"[^A-Za-z0-9._ -]", "_", name).strip(" .")
+    # A long name is shortened in the middle: the extension at the end says what the file is.
+    stem, dot, ext = name.rpartition(".")
+    if len(name) > 120 and dot and 0 < len(ext) <= 8:
+        name = f"{stem[:120 - len(ext) - 1].rstrip(' .')}.{ext}"
     return name[:120] or "upload"
 
 
