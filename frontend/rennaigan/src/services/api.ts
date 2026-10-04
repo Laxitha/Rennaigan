@@ -3,7 +3,7 @@
  * Connects directly to the live Python gateway (services/backend.ts).
  * All data is computed and returned live from the ML pipeline and SQLite store.
  */
-import { gateway } from './backend'
+import { BackendError, gateway } from './backend'
 import {
   caseToAnomalies,
   caseToAudit,
@@ -82,8 +82,9 @@ export const api = {
       if (caseFull && caseFull.id) {
         return caseToInvestigation(caseFull)
       }
-    } catch {
-      // Not found
+    } catch (e) {
+      // Only a 404 means the case does not exist. An unreachable or failing gateway is reported as such.
+      if (!(e instanceof BackendError) || e.status !== 404) throw e
     }
     throw new NotFoundError(targetId)
   },
