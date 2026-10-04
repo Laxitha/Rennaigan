@@ -71,6 +71,9 @@ def _run_inprocess(module: str, path: Path) -> dict:
         return app.analyze(path).model_dump()
 
 
+LOCAL_URL = re.compile(r"^http://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$")
+
+
 async def run_module(client: httpx.AsyncClient, module: str, url: str, path: Path, filename: str, *,
                      timeout_s: float, inprocess_fallback: bool, signal_floor: float) -> dict:
     t0 = time.monotonic()
@@ -79,8 +82,14 @@ async def run_module(client: httpx.AsyncClient, module: str, url: str, path: Pat
 
     if await service_up(client, module, url):
         try:
-            with open(path, "rb") as fh:
-                resp = await client.post(f"{url}/analyze", files={"file": (filename, fh)}, timeout=timeout_s)
+            # A detector on this host reads the stored file itself. Sending it a copy costs one
+            # full read and write of the file per module, which adds up on large videos.
+            resp = None
+            if LOCAL_URL.match(url):
+                resp = await client.post(f"{url}/analyze-path", json={"path": str(path.resolve())}, timeout=timeout_s)
+            if resp is None or resp.status_code in (404, 405, 422):
+                with open(path, "rb") as fh:
+                    resp = await client.post(f"{url}/analyze", files={"file": (filename, fh)}, timeout=timeout_s)
             if resp.status_code != 200:
                 # A dependency that is only imported at analysis time fails here, not at startup.
                 status = "unavailable" if re.search(r"no module named", resp.text, re.I) else "error"

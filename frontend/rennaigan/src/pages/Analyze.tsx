@@ -5,8 +5,8 @@ import { usePageReveal } from '@/animations/usePageReveal'
 import { usePrefs } from '@/hooks/usePrefs'
 import { d, dist, EASE, ensureFinished, gsap, useGSAP } from '@/lib/motion'
 import { bytes } from '@/lib/format'
-import { analyzeFile, useBackendUrl } from '@/services/backend'
-import { ErrorState, GlassBadge, GlassButton, GlassPanel, GlassUploader, useToast } from '@/components/glass'
+import { analyzeFile, useBackendUrl, type AnalysisProgress } from '@/services/backend'
+import { ErrorState, GlassBadge, GlassButton, GlassPanel, GlassProgress, GlassUploader, useToast } from '@/components/glass'
 import { Pipeline, type PipelineStep, type StepState } from '@/components/forensic/Pipeline'
 import { MediaGlyph, VERDICT_META, VerdictBadge } from '@/components/forensic/meta'
 import { PageHeader } from '@/components/navigation/PageHeader'
@@ -35,6 +35,14 @@ function classify(file: File): MediaType | null {
   return null
 }
 
+/** Pipeline step shown for each stage the gateway reports. */
+const STAGE_STEP: Record<string, number> = { preprocessing: 1, queued: 1, detectors: 2, fusion: 3, assessment: 3, sealing: 4, done: 4 }
+
+function duration(seconds: number) {
+  if (!isFinite(seconds) || seconds < 1) return 'a moment'
+  return seconds < 90 ? `${Math.round(seconds)} s` : `${Math.round(seconds / 60)} min`
+}
+
 export default function Analyze() {
   const scope = useRef<HTMLDivElement>(null)
   const result = useRef<HTMLDivElement>(null)
@@ -49,8 +57,16 @@ export default function Analyze() {
   const [rejected, setRejected] = useState<{ name: string; mime: string } | null>(null)
   const [realCase, setRealCase] = useState<CaseFull | null>(null)
   const [uploadPercent, setUploadPercent] = useState<number | null>(null)
+  const [uploadNote, setUploadNote] = useState('')
+  const [analysis, setAnalysis] = useState<AnalysisProgress | null>(null)
   const [errorDetails, setErrorDetails] = useState<string | null>(null)
   const started = useRef(0)
+  const [now, setNow] = useState(0)
+  useEffect(() => {
+    if (phase !== 'processing') return
+    const timer = setInterval(() => setNow(performance.now()), 1000)
+    return () => clearInterval(timer)
+  }, [phase])
   usePageReveal(scope, [phase])
 
   useEffect(() => () => { if (picked?.preview) URL.revokeObjectURL(picked.preview) }, [picked])
@@ -61,6 +77,8 @@ export default function Analyze() {
     setEvents([])
     setRealCase(null)
     setUploadPercent(null)
+    setUploadNote('')
+    setAnalysis(null)
     setErrorDetails(null)
     started.current = performance.now()
     setPhase('processing')
@@ -77,6 +95,14 @@ export default function Analyze() {
       onUploadProgress: (loaded, total) => {
         const pct = Math.round((loaded / total) * 100)
         setUploadPercent(pct)
+        const elapsed = (performance.now() - started.current) / 1000
+        const rate = elapsed > 1 ? loaded / elapsed : 0
+        setUploadNote(`${bytes(loaded)} of ${bytes(total)}` + (rate > 0 && loaded < total ? `, ${bytes(rate)}/s, about ${duration((total - loaded) / rate)} left` : ''))
+      },
+      onProgress: (p) => {
+        // Polls can arrive out of order; the bar never moves backwards.
+        setAnalysis((prev) => (prev && prev.percent > p.percent && p.percent >= 0 ? prev : p))
+        setStep((cur) => Math.max(cur, STAGE_STEP[p.stage] ?? cur))
       },
       onUploaded: () => {
         setUploadPercent(100)
@@ -123,7 +149,7 @@ export default function Analyze() {
     })
   }
 
-  const reset = () => { setPhase('idle'); setPicked(null); setRejected(null); setRealCase(null); setUploadPercent(null); setErrorDetails(null) }
+  const reset = () => { setPhase('idle'); setPicked(null); setRejected(null); setRealCase(null); setUploadPercent(null); setUploadNote(''); setAnalysis(null); setErrorDetails(null) }
 
   useGSAP(() => {
     if (phase !== 'done' || !result.current) return
@@ -133,6 +159,13 @@ export default function Analyze() {
       .fromTo('[data-result-foot]', { autoAlpha: 0 }, { autoAlpha: 1, duration: d(0.4) }, '-=0.2')
   }, { dependencies: [phase], scope: result })
 
+  const uploading = uploadPercent === null || uploadPercent < 100
+  const elapsed = duration(Math.max(0, (now - started.current) / 1000))
+  const legacy = analysis?.stage === 'unsupported'
+  const analysisPercent = legacy ? 0 : analysis?.percent ?? 2
+  const analysisLabel = legacy
+    ? `Analyzing for ${elapsed}. This backend is an older version that does not report progress.`
+    : `Analyzing: ${analysis?.detail || 'starting'} (${elapsed})`
   const steps: PipelineStep[] = STEPS.map((s, i) => {
     const state: StepState = phase === 'done' || i < step ? 'done' : i === step && phase === 'processing' ? 'active' : 'pending'
     return { id: s.id, label: s.label, state }
@@ -193,6 +226,9 @@ export default function Analyze() {
                 <GlassButton size="sm" variant="quiet" iconOnly aria-label="Cancel and choose another file" onClick={reset} icon={<X size={15} weight="light" />} />
               </div>
             </div>
+            {phase === 'processing' && (uploading
+              ? <GlassProgress className="mt-6" tone="info" value={uploadPercent ?? 0} label={`Uploading${uploadNote ? `: ${uploadNote}` : ''}`} valueLabel={`${uploadPercent ?? 0}%`} />
+              : <GlassProgress className="mt-6" value={analysisPercent} label={analysisLabel} valueLabel={legacy ? '' : `${analysisPercent}%`} />)}
             <Pipeline steps={steps} className="mt-8" />
           </GlassPanel>
 
@@ -209,7 +245,9 @@ export default function Analyze() {
                         ? `Uploading media (${uploadPercent}%)...`
                         : ['Ingesting media', 'Extracting metadata & frames', 'Running model detectors', 'Computing evidence fusion', 'Sealing cryptographic audit trail'][Math.min(step, 4)]}
                     </p>
-                    <p className="t-mono mt-2 text-fg-3">Stage {Math.min(step + 1, STEPS.length)} of {STEPS.length}</p>
+                    <p className="t-mono mt-2 text-fg-3">
+                      {uploading ? uploadNote || 'Starting upload' : analysisLabel}
+                    </p>
                   </div>
                 </GlassPanel>
               ) : realCase ? (

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import tempfile
 import threading
@@ -10,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Callable, Awaitable
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import Body, FastAPI, File, UploadFile, HTTPException
 
 from .schema import ModuleResult
 
@@ -62,5 +63,23 @@ def create_app(
             raise HTTPException(status_code=500, detail=str(exc))
         finally:
             tmp_path.unlink(missing_ok=True)
+
+    @app.post("/analyze-path", response_model=ModuleResult)
+    async def analyze_path(path: str = Body(..., embed=True)):
+        """Analyse a file the gateway already stored on this host, instead of receiving a copy.
+
+        Only files inside the gateway's data directory are accepted.
+        """
+        base = Path(os.environ.get("RENNAIGAN_DATA_DIR") or Path(__file__).resolve().parent.parent / "data").resolve()
+        target = Path(path).resolve()
+        if not target.is_relative_to(base) or not target.is_file():
+            raise HTTPException(status_code=404, detail="Not a file in the gateway data directory.")
+        try:
+            result = await asyncio.to_thread(analyze_fn, target)
+            if hasattr(result, "__await__"):
+                result = await result
+            return result
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
 
     return app

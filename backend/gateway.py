@@ -49,6 +49,9 @@ class ReviewBody(BaseModel):
     analyst: str = Field(default="analyst", min_length=1, max_length=120)
 
 
+PROGRESS_ID = re.compile(r"^[0-9a-f]{16,32}$")
+
+
 class UploadStart(BaseModel):
     name: str = Field(min_length=1, max_length=300)
     size: int
@@ -75,6 +78,15 @@ def create_app(cfg: dict | None = None) -> FastAPI:
     urls = {m: cfg["services"][m]["url"].rstrip("/") for m in config.MODULES}
     assessment_cfg = cfg["assessment"]
     uploads: dict[str, dict] = {}
+    progress: dict[str, dict] = {}
+
+    def report(key: str | None, percent: int, stage: str, detail: str) -> None:
+        """Record how far an analysis has got, for GET /progress/{key}."""
+        if not key:
+            return
+        for old in [k for k, v in progress.items() if time.monotonic() - v["at"] > 3600]:
+            progress.pop(old, None)
+        progress[key] = {"percent": percent, "stage": stage, "detail": detail, "at": time.monotonic()}
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -197,7 +209,14 @@ def create_app(cfg: dict | None = None) -> FastAPI:
     async def analyze_upload(upload: UploadFile, mode: str, batch_id: str | None = None) -> dict:
         return await run_case(await ingest(upload), mode, batch_id)
 
-    async def run_case(ingested: tuple, mode: str, batch_id: str | None = None) -> dict:
+    async def run_case(ingested: tuple, mode: str, batch_id: str | None = None, progress_id: str | None = None) -> dict:
+        try:
+            return await _run_case(ingested, mode, batch_id, progress_id)
+        except BaseException:
+            report(progress_id, 100, "failed", "The analysis failed.")
+            raise
+
+    async def _run_case(ingested: tuple, mode: str, batch_id: str | None, progress_id: str | None) -> dict:
         tmp, name, sha, size, info = ingested
         t0 = time.monotonic()
         st = store()
@@ -222,12 +241,29 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             applicable.remove("audio")
             modules["audio"] = {"status": "not_applicable", "detail": "The video has no audio stream.", "findings_count": 0}
 
+        # Detector modules take nearly all of the time, so they span 10% to 85%.
+        finished: list[str] = []
+
+        def detectors_progress() -> None:
+            waiting = [m for m in applicable if m not in finished]
+            report(progress_id, 10 + round(75 * len(finished) / max(len(applicable), 1)), "detectors",
+                   f"{len(finished)} of {len(applicable)} detector modules finished"
+                   + (f", running: {', '.join(waiting)}" if waiting else ""))
+
+        async def timed(module: str) -> dict:
+            run = await run_module(app.state.client, module, urls[module], media_path, name, timeout_s=float(gw["module_timeout_s"]),
+                                   inprocess_fallback=bool(gw["inprocess_fallback"]), signal_floor=float(cfg["fusion"]["signal_floor"]))
+            finished.append(module)
+            detectors_progress()
+            return run
+
+        if app.state.slots.locked():
+            report(progress_id, 8, "queued", "Waiting for an earlier analysis to finish")
         async with app.state.slots:
-            results = await asyncio.gather(*[
-                run_module(app.state.client, m, urls[m], media_path, name, timeout_s=float(gw["module_timeout_s"]),
-                           inprocess_fallback=bool(gw["inprocess_fallback"]), signal_floor=float(cfg["fusion"]["signal_floor"]))
-                for m in applicable
-            ])
+            detectors_progress()
+            # The gateway's own heatmap or spectrogram is drawn while the detectors run.
+            own = asyncio.create_task(asyncio.to_thread(gateway_artifacts, case_id, media_path, info, art_dir))
+            results = await asyncio.gather(*[timed(m) for m in applicable])
         runs = dict(zip(applicable, results))
 
         findings, artifacts = [], []
@@ -239,7 +275,8 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             st.append_audit(case_id, "detector.completed", f"{run['info']['status']}: {run['info']['detail']}", actor=module,
                             duration_ms=int(run["info"]["elapsed_s"] * 1000),
                             extra={"findings": run["info"]["findings_count"], **{f"weights.{k}": v for k, v in run["info"]["weights_sha256"].items()}})
-        artifacts.extend(await asyncio.to_thread(gateway_artifacts, case_id, media_path, info, art_dir))
+        artifacts.extend(await own)
+        report(progress_id, 88, "fusion", "Combining detector scores")
         # The UI overlays the first heatmap it finds, so lead with the strongest detector's.
         top_score: dict[str, float] = {}
         for f in findings:
@@ -272,11 +309,15 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             "artifacts": artifacts,
             "gateway_version": __version__,
         }
+        if assessment_cfg["enabled"] and assess.available():
+            report(progress_id, 90, "assessment", "Writing the reasoned verdict")
         await add_verdict(doc)
+        report(progress_id, 97, "sealing", "Sealing the audit trail")
         doc["runtime_s"] = round(time.monotonic() - t0, 3)
         st.save_case(doc, n)
         st.append_audit(case_id, "case.sealed", "Analysis result stored. Its digest is sealed into this entry.",
                         duration_ms=int(doc["runtime_s"] * 1000), extra={"result_sha256": result_digest(doc)})
+        report(progress_id, 100, "done", case_id)
         return st.get_case(case_id)
 
     async def add_verdict(doc: dict) -> None:
@@ -349,13 +390,24 @@ def create_app(cfg: dict | None = None) -> FastAPI:
 
     @app.post("/analyze")
     async def analyze(file: UploadFile = File(...), mode: Literal["public", "identity"] = Form("public"),
-                      batch_id: str | None = Form(None)):
+                      batch_id: str | None = Form(None), progress_id: str | None = Form(None)):
         if batch_id is not None and not BATCH_ID.match(batch_id):
             raise HTTPException(422, "batch_id must look like BT-<12 hex characters>.")
-        return stream_case(await ingest(file), mode, batch_id)
+        if progress_id is not None and not PROGRESS_ID.match(progress_id):
+            raise HTTPException(422, "progress_id must be 16 to 32 hex characters.")
+        report(progress_id, 3, "preprocessing", "Checking the file")
+        return stream_case(await ingest(file), mode, batch_id, progress_id)
 
-    def stream_case(ingested: tuple, mode: str, batch_id: str | None) -> StreamingResponse:
-        task = asyncio.create_task(run_case(ingested, mode, batch_id))
+    @app.get("/progress/{progress_id}")
+    async def get_progress(progress_id: str):
+        """How far an analysis has got. The id is the upload id, or the progress_id sent with POST /analyze."""
+        state = progress.get(progress_id)
+        if state is None:
+            raise HTTPException(404, "No analysis is known under this id.")
+        return {k: state[k] for k in ("percent", "stage", "detail")}
+
+    def stream_case(ingested: tuple, mode: str, batch_id: str | None, progress_id: str | None = None) -> StreamingResponse:
+        task = asyncio.create_task(run_case(ingested, mode, batch_id, progress_id))
 
         async def body():
             # Detector runs can take minutes, and tunnels and proxies drop a request that stays
@@ -425,9 +477,17 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             raise HTTPException(422, f"Upload is incomplete: {len(up['chunks'])} of {total} chunks received.")
         if body.batch_id is not None and not BATCH_ID.match(body.batch_id):
             raise HTTPException(422, "batch_id must look like BT-<12 hex characters>.")
-        digest = await asyncio.to_thread(file_sha256, up["path"])
-        ingested = await probe_received(up["path"], up["name"], digest, up["size"])
-        return stream_case(ingested, body.mode, body.batch_id)
+        report(upload_id, 3, "preprocessing", "Hashing and checking the file")
+        # Hashing a large file and reading its properties are independent, so they run together.
+        hashing = asyncio.create_task(asyncio.to_thread(file_sha256, up["path"]))
+        try:
+            info = await asyncio.to_thread(media.probe, up["path"], up["name"])
+        except media.UnsupportedMedia as exc:
+            await hashing
+            up["path"].unlink(missing_ok=True)
+            report(upload_id, 100, "failed", str(exc))
+            raise HTTPException(415, str(exc))
+        return stream_case((up["path"], up["name"], await hashing, up["size"], info), body.mode, body.batch_id, upload_id)
 
     @app.post("/bulk")
     async def bulk(files: list[UploadFile] = File(...), mode: Literal["public", "identity"] = Form("public")):

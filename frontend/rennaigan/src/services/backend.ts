@@ -209,10 +209,14 @@ export function useBackendHealth(url: string) {
 
 /* ------------------------------------------------------------------- analyze */
 
+export interface AnalysisProgress { percent: number; stage: string; detail: string }
+
 export interface AnalyzeOptions {
   signal?: AbortSignal
   onUploadProgress?: (loaded: number, total: number) => void
   onUploaded?: () => void
+  /** Reported about once a second while the gateway analyzes the file. */
+  onProgress?: (p: AnalysisProgress) => void
   mode?: 'public' | 'identity'
   /** Groups files submitted together from the bulk page. */
   batchId?: string
@@ -222,7 +226,8 @@ export interface AnalyzeOptions {
 
 /** Files above this size go up in chunks: tunnels and proxies commonly cap one request at 100 MB. */
 const CHUNKED_ABOVE = 12 * 1024 * 1024
-const PARALLEL_CHUNKS = 4
+/** Browsers open at most six connections to one host; one is left free for other requests. */
+const PARALLEL_CHUNKS = 5
 
 function parseCase(status: number, text: string, what: string): CaseFull {
   let body: unknown
@@ -234,7 +239,43 @@ function parseCase(status: number, text: string, what: string): CaseFull {
   return c as CaseFull
 }
 
-/** POST /uploads, PUT the chunks four at a time, then POST /uploads/:id/analyze. A failed chunk is retried twice. */
+/** Poll GET /progress/:id until stopped. Older gateways without the endpoint are simply silent. */
+function watchProgress(url: string, id: string, onProgress?: (p: AnalysisProgress) => void): () => void {
+  if (!onProgress) return () => {}
+  let stopped = false
+  let missing = 0
+  const tick = async () => {
+    if (stopped) return
+    try {
+      const res = await fetch(`${url}/progress/${id}`, { headers: { Accept: 'application/json' } })
+      if (res.ok && !stopped) { missing = 0; onProgress(await res.json() as AnalysisProgress) }
+      // A gateway from before progress reporting answers 404 for good: say so instead of a frozen bar.
+      else if (res.status === 404 && ++missing === 3 && !stopped) onProgress({ percent: -1, stage: 'unsupported', detail: '' })
+    } catch { /* the analysis request itself reports failures */ }
+    if (!stopped) timer = setTimeout(tick, 1000)
+  }
+  let timer = setTimeout(tick, 300)
+  return () => { stopped = true; clearTimeout(timer) }
+}
+
+/** PUT one chunk with byte-level progress. fetch cannot report upload progress, XHR can. */
+function putChunk(target: string, chunk: Blob, signal: AbortSignal | undefined, onBytes: (loaded: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', target)
+    xhr.upload.onprogress = (e) => onBytes(e.loaded)
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300
+      ? resolve()
+      : reject(new BackendError('http', `Upload of a part returned ${xhr.status}`, xhr.status, xhr.responseText)))
+    xhr.onerror = () => reject(new BackendError('unreachable', `Network error contacting ${hostOf(target)}`))
+    xhr.onabort = () => reject(new BackendError('aborted', 'Analysis cancelled'))
+    signal?.addEventListener('abort', () => xhr.abort(), { once: true })
+    if (signal?.aborted) { xhr.abort(); return }
+    xhr.send(chunk)
+  })
+}
+
+/** POST /uploads, PUT the chunks in parallel, then POST /uploads/:id/analyze. A failed chunk is retried twice. */
 async function analyzeFileChunked(url: string, file: File, opts: AnalyzeOptions): Promise<CaseFull> {
   const call = async (path: string, init: RequestInit, what: string) => {
     let res: Response
@@ -251,40 +292,51 @@ async function analyzeFileChunked(url: string, file: File, opts: AnalyzeOptions)
   const total = Math.ceil(file.size / start.chunk_bytes)
   // Several chunks at once: on a typical home connection this nearly doubles upload speed.
   let next = 0
-  let sent = 0
+  const sent = new Array<number>(total).fill(0)
+  const notify = () => opts.onUploadProgress?.(sent.reduce((a, b) => a + b, 0), file.size)
   const worker = async () => {
     while (next < total) {
       const i = next++
       const chunk = file.slice(i * start.chunk_bytes, (i + 1) * start.chunk_bytes)
       for (let attempt = 0; ; attempt++) {
-        try { await call(`/uploads/${start.upload_id}/${i}`, { method: 'PUT', body: chunk }, `Upload of part ${i + 1}`); break } catch (e) {
+        try {
+          await putChunk(`${url}/uploads/${start.upload_id}/${i}`, chunk, opts.signal, (loaded) => { sent[i] = Math.min(loaded, chunk.size); notify() })
+          break
+        } catch (e) {
+          sent[i] = 0
           if (attempt >= 2 || !(e instanceof BackendError) || e.kind !== 'unreachable') throw e
         }
       }
-      sent += chunk.size
-      opts.onUploadProgress?.(sent, file.size)
+      sent[i] = chunk.size
+      notify()
     }
   }
   await Promise.all(Array.from({ length: Math.min(PARALLEL_CHUNKS, total) }, worker))
   opts.onUploaded?.()
-  const text = await call(`/uploads/${start.upload_id}/analyze`, { method: 'POST', headers: json, body: JSON.stringify({ mode: opts.mode ?? 'public', batch_id: opts.batchId ?? null }) }, 'POST /analyze')
-  return parseCase(200, text, 'POST /analyze')
+  const stop = watchProgress(url, start.upload_id, opts.onProgress)
+  try {
+    const text = await call(`/uploads/${start.upload_id}/analyze`, { method: 'POST', headers: json, body: JSON.stringify({ mode: opts.mode ?? 'public', batch_id: opts.batchId ?? null }) }, 'POST /analyze')
+    return parseCase(200, text, 'POST /analyze')
+  } finally { stop() }
 }
 
 /** POST /analyze with the file as multipart field "file". XHR is used for upload progress. */
 export function analyzeFile(url: string, file: File, opts: AnalyzeOptions = {}): Promise<CaseFull> {
   if (file.size > CHUNKED_ABOVE) return analyzeFileChunked(url, file, opts)
-  return new Promise((resolve, reject) => {
+  const progressId = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('')
+  let stop = () => {}
+  return new Promise<CaseFull>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     const form = new FormData()
     form.append('file', file, file.name)
     form.append('mode', opts.mode ?? 'public')
+    form.append('progress_id', progressId)
     if (opts.batchId) form.append('batch_id', opts.batchId)
     xhr.open('POST', `${url}/analyze`)
     xhr.timeout = opts.timeoutMs ?? 15 * 60_000
     xhr.setRequestHeader('Accept', 'application/json')
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) opts.onUploadProgress?.(e.loaded, e.total) }
-    xhr.upload.onload = () => opts.onUploaded?.()
+    xhr.upload.onload = () => { opts.onUploaded?.(); stop = watchProgress(url, progressId, opts.onProgress) }
     xhr.onload = () => {
       if (xhr.status < 200 || xhr.status >= 300) { reject(new BackendError('http', `POST /analyze returned ${xhr.status}`, xhr.status, xhr.responseText)); return }
       try { resolve(parseCase(xhr.status, xhr.responseText, 'POST /analyze')) } catch (e) { reject(e) }
@@ -295,5 +347,5 @@ export function analyzeFile(url: string, file: File, opts: AnalyzeOptions = {}):
     opts.signal?.addEventListener('abort', () => xhr.abort(), { once: true })
     if (opts.signal?.aborted) { xhr.abort(); return }
     xhr.send(form)
-  })
+  }).finally(() => stop())
 }

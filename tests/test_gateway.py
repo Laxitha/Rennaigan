@@ -339,6 +339,9 @@ def test_chunked_upload(client, samples, monkeypatch):
     assert client.put(f"/uploads/{start['upload_id']}/0", content=data).json()["received"] == 1  # a retry is harmless
     case = client.post(f"/uploads/{start['upload_id']}/analyze", json={"mode": "public"}).json()
     assert case["media"]["media_type"] == "video" and case["file"]["sha256"] == hashlib.sha256(data).hexdigest()
+    # the upload id doubles as the progress id
+    assert client.get(f"/progress/{start['upload_id']}").json() == {"percent": 100, "stage": "done", "detail": case["id"]}
+    assert client.get("/progress/" + "0" * 24).status_code == 404
 
     assert client.post("/uploads", json={"name": "x.exe", "size": 10}).status_code == 415
     empty = client.post("/uploads", json={"name": "clip.mp4", "size": len(data)}).json()
