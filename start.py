@@ -56,6 +56,21 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+def thread_env() -> dict[str, str]:
+    """Thread settings for the detector processes.
+
+    Several detectors run at once, and each numeric library starts one thread per core and
+    keeps idle threads spinning. On a two-core machine (a Colab GPU runtime) that left a dozen
+    threads fighting over two cores: face landmarks took 0.4 s a frame instead of about 0.02 s.
+    Idle threads now sleep, and on small machines each library is held to one thread.
+    """
+    env = {"OMP_WAIT_POLICY": "PASSIVE", "KMP_BLOCKTIME": "0"}
+    if (os.cpu_count() or 8) <= 4:
+        env.update({name: "1" for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+                                           "NUMEXPR_NUM_THREADS", "RENNAIGAN_THREADS")})
+    return {name: os.environ.get(name, value) for name, value in env.items()}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--gateway-only", action="store_true", help="do not start the detector services")
@@ -101,7 +116,8 @@ def main() -> None:
             process = subprocess.Popen(
                 [members[0][2], "-m", "common.multi", *[f"{m}:{p}" for m, p, _ in members]],
                 cwd=ROOT, stdout=open(log, "w"), stderr=subprocess.STDOUT,
-                env={**os.environ, "MPLBACKEND": "Agg"},  # a notebook's inline backend does not exist in a service
+                # MPLBACKEND: a notebook's inline backend does not exist in a service.
+                env={**os.environ, "MPLBACKEND": "Agg", **thread_env()},
             )
             for name in names:
                 children[name] = process

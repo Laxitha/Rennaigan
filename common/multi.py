@@ -12,13 +12,32 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import os
 import sys
 import traceback
 
 import uvicorn
 
 
+def limit_threads() -> None:
+    """Apply start.py's thread limit to the libraries that do not read the OMP variables."""
+    count = int(os.environ.get("RENNAIGAN_THREADS") or 0)
+    if count <= 0:
+        return
+    try:
+        import cv2
+        cv2.setNumThreads(count)
+    except Exception:
+        pass
+    try:
+        import torch
+        torch.set_num_threads(count)
+    except Exception:
+        pass
+
+
 async def main(specs: list[str]) -> None:
+    limit_threads()
     servers = []
     for spec in specs:
         module, _, port = spec.partition(":")

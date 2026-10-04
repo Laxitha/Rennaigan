@@ -64,8 +64,45 @@ def status() -> bool:
     return health["services_up"] == health["services_total"]
 
 
+SYNCNET_FILES = {
+    "repos/syncnet/data/syncnet_v2.model": "http://www.robots.ox.ac.uk/~vgg/software/lipsync/data/syncnet_v2.model",
+    "repos/syncnet/detectors/s3fd/weights/sfd_face.pth": "https://www.robots.ox.ac.uk/~vgg/software/lipsync/data/sfd_face.pth",
+}
+
+
+def repair_weights() -> None:
+    """Re-download lip-sync model files that an interrupted setup left cut short."""
+    for relative, url in SYNCNET_FILES.items():
+        path = ROOT / relative
+        if not path.parent.is_dir():
+            continue
+        check = subprocess.run([sys.executable, "-c", "import sys, torch; torch.load(sys.argv[1], map_location='cpu', weights_only=False)",
+                                str(path)], capture_output=True)
+        if check.returncode != 0:
+            print(f"{path.name} is missing or incomplete: downloading it again")
+            subprocess.run(["wget", "-q", url, "-O", str(path)])
+
+
+def wait_for_models() -> None:
+    """Block until every service has loaded its models, so the first upload is not the one that waits."""
+    urls = {name: service["url"] for name, service in get("/health")["services"].items()}
+    pending, deadline = set(urls), time.time() + 600
+    while pending and time.time() < deadline:
+        for module in sorted(pending):
+            try:
+                with urllib.request.urlopen(f"{urls[module]}/health", timeout=5) as resp:
+                    if json.load(resp).get("ready", True):
+                        pending.discard(module)
+            except Exception:
+                pass
+        if pending:
+            time.sleep(5)
+    print("Models loaded." if not pending else f"Still loading models: {', '.join(sorted(pending))} (the first upload will be slow)")
+
+
 def restart() -> None:
     stop()
+    repair_weights()
     env = dict(os.environ, PYTHONUNBUFFERED="1")
     print("Claude assessment key:", "present" if env.get("ANTHROPIC_API_KEY") else "not set (rule-based verdict only)")
     LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -81,6 +118,7 @@ def restart() -> None:
             continue
         if health["services_up"] == health["services_total"]:
             break
+    wait_for_models()
     status()
 
 
