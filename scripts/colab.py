@@ -76,17 +76,26 @@ def repair_weights() -> None:
         path = ROOT / relative
         if not path.parent.is_dir():
             continue
-        check = subprocess.run([sys.executable, "-c", "import sys, torch; torch.load(sys.argv[1], map_location='cpu', weights_only=False)",
-                                str(path)], capture_output=True)
-        if check.returncode != 0:
-            print(f"{path.name} is missing or incomplete: downloading it again")
-            subprocess.run(["wget", "-q", url, "-O", str(path)])
+        def intact() -> bool:
+            return subprocess.run([sys.executable, "-c", "import sys, torch; torch.load(sys.argv[1], map_location='cpu', weights_only=False)",
+                                   str(path)], capture_output=True).returncode == 0
+
+        if intact():
+            continue
+        print(f"{path.name} is missing or incomplete: downloading the rest (about 90 MB at most, a minute or two)", flush=True)
+        wget = ["wget", "-q", "--timeout=30", "--tries=3", url, "-O", str(path)]
+        subprocess.run(wget[:1] + ["-c"] + wget[1:])  # -c: only the missing part of a file that was cut short
+        if not intact():
+            path.unlink(missing_ok=True)
+            subprocess.run(wget)
+        print(f"{path.name}: {'ok' if intact() else 'still not usable, lip sync will be reported as unavailable'}", flush=True)
 
 
 def wait_for_models() -> None:
     """Block until every service has loaded its models, so the first upload is not the one that waits."""
     urls = {name: service["url"] for name, service in get("/health")["services"].items()}
-    pending, deadline = set(urls), time.time() + 600
+    pending, deadline, started = set(urls), time.time() + 600, time.time()
+    print("Loading models (a few minutes on a fresh runtime)...", flush=True)
     while pending and time.time() < deadline:
         for module in sorted(pending):
             try:
@@ -97,6 +106,8 @@ def wait_for_models() -> None:
                 pass
         if pending:
             time.sleep(5)
+            if int(time.time() - started) % 30 < 5:
+                print(f"  {int(time.time() - started)} s: still loading {', '.join(sorted(pending))}", flush=True)
     print("Models loaded." if not pending else f"Still loading models: {', '.join(sorted(pending))} (the first upload will be slow)")
 
 
