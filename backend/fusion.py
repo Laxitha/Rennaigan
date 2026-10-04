@@ -159,8 +159,11 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
     primary = applicable[0] if applicable else None
     if primary in ("image", "video", "audio") and coverage.get(primary, 0) <= 0:
         # Seen live: the video module timed out and the file was called real on voice and motion alone.
-        label = "Inconclusive"
-        reasons.append(f"The {primary} detectors, which carry the verdict for this kind of file, produced no evidence.")
+        # No trust score either: one from the supporting checks alone would read as a clean result.
+        why = next((f["note"] for f in runs[primary]["findings"] if _no_data(f) and f["model"] != "ecapa"), "") if runs.get(primary) else ""
+        return {**result, "trust_score": None, "label": "Inconclusive",
+                "label_reason": f"The {primary} detectors, which carry the verdict for this kind of file, produced no evidence"
+                                + (f" ({why.split(': ', 1)[-1]})." if why else ".") + " No trust score was computed."}
     elif capped:
         # A detector that is this sure is evidence of manipulation on its own. Detectors that
         # could not run limit how firmly a file can be cleared, not whether it can be flagged.

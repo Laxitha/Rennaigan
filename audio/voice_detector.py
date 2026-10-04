@@ -40,6 +40,7 @@ MAX_SECONDS = 900
 BATCH_SIZE = 8
 RAW_DECISION_POINT = 0.25   # raw score that best separated human from synthetic speech
 SILENCE_RMS = 0.004
+MIN_SECONDS = 3             # shorter clips fill too little of a window; never measured, so not scored
 THRESHOLD = 0.5
 
 
@@ -85,9 +86,10 @@ def analyze(file_path: Path, audio_path: Path | None = None) -> ModuleResult:
     sha = file_sha256(file_path)
 
     audio = load_audio(audio_path or file_path)
-    if len(audio) < SAMPLE_RATE:
+    if len(audio) < MIN_SECONDS * SAMPLE_RATE:
         return ModuleResult(module="audio", file_sha256=sha, runtime_s=time.time() - t0,
-                            findings=[Finding(model="voice", score=0.0, note="no_speech: less than a second of audio")])
+                            findings=[Finding(model="voice", score=0.0, note=f"no_usable_speech: {len(audio) / SAMPLE_RATE:.1f} s of audio is too short "
+                                                                                 f"to judge, at least {MIN_SECONDS} s is needed")])
 
     extractor, model, fake_index = load_model()
 

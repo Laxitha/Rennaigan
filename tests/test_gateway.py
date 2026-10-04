@@ -89,7 +89,16 @@ def test_fusion_unavailable_modules_are_not_counted_as_clean(cfg):
     assert out["label"] == "Inconclusive"
     assert out["evidence_weight"] == pytest.approx(0.10 / 0.45, abs=1e-3)
     assert "image" not in out["module_scores"]
-    assert out["trust_score"] == 80.0
+    assert out["trust_score"] is None  # metadata alone must not read as a clean result
+
+
+def test_clip_too_short_to_judge_is_uncertain(cfg):
+    runs = {"audio": {"info": {"status": "ok"}, "coverage": 1.0, "findings": [
+                {"model": "voice", "score": 0.0, "kind": "info", "note": "no_usable_speech: 1.2 s of audio is too short to judge"}]},
+            "metadata": run_of("ok", 1.0, ("ffprobe", 0.2))}
+    out = fuse(runs, ["audio", "metadata"], "public", cfg)
+    assert out["label"] == "Inconclusive" and out["trust_score"] is None
+    assert "too short" in out["label_reason"]
 
 
 def test_fusion_without_any_evidence_gives_no_score(cfg):

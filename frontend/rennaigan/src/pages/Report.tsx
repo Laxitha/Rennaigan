@@ -103,6 +103,8 @@ export default function Report() {
   if (gate || !investigation) return <div ref={scope}>{gate}</div>
 
   const inv = investigation
+  // No score was computed (nothing the main detectors could judge): never show a stand-in number.
+  const noScore = caseFull ? caseFull.trust_score === null : false
   const link = `${location.origin}/reports/${inv.id}`
   const mediaUrl = absUrl(backendUrl, caseFull?.file?.media_url)
   const duration = inv.duration || caseFull?.media?.duration_s || 10
@@ -190,11 +192,11 @@ export default function Report() {
         <div className="mt-6 grid gap-x-10 gap-y-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
           <div>
             <div className="flex items-baseline gap-2">
-              <span className="t-num text-[4.5rem] font-[520] leading-none tracking-[-0.05em]">{inv.confidence}</span><span className="text-2xl text-fg-2">%</span>
+              <span className="t-num text-[4.5rem] font-[520] leading-none tracking-[-0.05em]">{noScore ? '--' : inv.confidence}</span>{!noScore && <span className="text-2xl text-fg-2">%</span>}
               <span className="t-label ml-3">Trust score ({inv.status})</span>
             </div>
             <p className="t-meta mt-2">How authentic the file looks: 0 is manipulated, 100 is clean. The confidence beside the verdict is how sure that verdict is, so a deepfake has a low trust score and a high confidence.</p>
-            <ConfidenceBand value={inv.confidence} low={Math.max(0, inv.confidence - 8)} high={Math.min(100, inv.confidence + 8)} />
+            {!noScore && <ConfidenceBand value={inv.confidence} low={Math.max(0, inv.confidence - 8)} high={Math.min(100, inv.confidence + 8)} />}
             <p className="mt-4 max-w-[58ch] text-sm leading-relaxed text-fg-2">
               {caseFull?.label_reason || (inv.confidence > 70
                 ? 'High confidence in media authenticity. Evaluated detectors observed no manipulation markers exceeding threshold.'
@@ -203,7 +205,7 @@ export default function Report() {
           </div>
           <dl className="grid content-start gap-0">
             {([
-              ['Manipulation indicators', <LevelBadge key="a" level={inv.indicators} />],
+              ['Manipulation indicators', noScore ? <GlassBadge key="a" tone="neutral">Not assessed</GlassBadge> : <LevelBadge key="a" level={inv.indicators} />],
               ['Evidence coverage', <span key="b" className="t-mono text-fg">{inv.coverage}%</span>],
               ['Verdict label', <GlassBadge key="c" tone={inv.confidence > 70 ? 'ok' : 'warn'}>{caseFull?.label || (inv.confidence > 70 ? 'Authentic' : 'Review recommended')}</GlassBadge>],
               ['Human review', <GlassBadge key="d" tone={caseFull?.review ? 'ok' : 'neutral'}>{caseFull?.review ? 'Reviewed' : 'Pending'}</GlassBadge>],
