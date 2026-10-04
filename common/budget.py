@@ -25,9 +25,9 @@ def has_gpu() -> bool:
 def get() -> dict:
     if has_gpu():
         return {"reduced": False, "max_frames": 96, "aigen_frames": 16, "window_s": 6.0, "max_windows": 4,
-                "lip_motion": True, "lip_sync": True, "optical_flow": True}
+                "lip_motion": True, "lip_sync": True, "optical_flow": True, "voice_windows": 48}
     return {"reduced": True, "max_frames": 16, "aigen_frames": 4, "window_s": 6.0, "max_windows": 2,
-            "lip_motion": False, "lip_sync": False, "optical_flow": False}
+            "lip_motion": False, "lip_sync": False, "optical_flow": False, "voice_windows": 12}
 
 
 REDUCED_NOTE = "No GPU on this machine: reduced analysis (fewer frames, shorter windows, lip motion, lip sync and optical flow skipped)."

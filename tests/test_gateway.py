@@ -316,23 +316,38 @@ def test_claude_assessment_is_recorded_and_sealed(client, samples, monkeypatch):
     assert failed["verdict"]["source"] == "fusion" and "rate limited" in failed["assessment_error"]
 
 
-def test_chunked_upload(client, samples):
-    data = (samples / "clip.mp4").read_bytes()
-    start = client.post("/uploads", json={"name": "clip.mp4", "size": len(data)}).json()
-    half = len(data) // 2
-    assert client.put(f"/uploads/{start['upload_id']}/0", content=data[:half]).json()["received"] == half
-    assert client.put(f"/uploads/{start['upload_id']}/0", content=data[:half]).json()["received"] == half  # retry is ignored
-    assert client.put(f"/uploads/{start['upload_id']}/5", content=b"x").status_code == 409
-    assert client.put(f"/uploads/{start['upload_id']}/1", content=data[half:]).json()["received"] == len(data)
-    case = client.post(f"/uploads/{start['upload_id']}/analyze", json={"mode": "public"}).json()
-    assert case["media"]["media_type"] == "video" and case["file"]["size_bytes"] == len(data)
+def test_chunked_upload(client, samples, monkeypatch):
     import hashlib
-    assert case["file"]["sha256"] == hashlib.sha256(data).hexdigest()
+    from backend import gateway
+    data = (samples / "clip.mp4").read_bytes()
+    size = gateway.CHUNK_BYTES  # default chunk size; the sample is smaller, so use a tiny one via a second app
+    start = client.post("/uploads", json={"name": "clip.mp4", "size": len(data)}).json()
+    assert start["chunk_bytes"] == size
+    # one chunk covers this small file
+    assert client.put(f"/uploads/{start['upload_id']}/3", content=b"x").status_code == 409  # outside the file
+    assert client.put(f"/uploads/{start['upload_id']}/0", content=data[:100]).status_code == 422  # wrong length
+    assert client.put(f"/uploads/{start['upload_id']}/0", content=data).json()["received"] == 1
+    assert client.put(f"/uploads/{start['upload_id']}/0", content=data).json()["received"] == 1  # a retry is harmless
+    case = client.post(f"/uploads/{start['upload_id']}/analyze", json={"mode": "public"}).json()
+    assert case["media"]["media_type"] == "video" and case["file"]["sha256"] == hashlib.sha256(data).hexdigest()
 
     assert client.post("/uploads", json={"name": "x.exe", "size": 10}).status_code == 415
-    short = client.post("/uploads", json={"name": "clip.mp4", "size": len(data)}).json()
-    client.put(f"/uploads/{short['upload_id']}/0", content=data[:half])
-    assert client.post(f"/uploads/{short['upload_id']}/analyze", json={}).status_code == 422
+    empty = client.post("/uploads", json={"name": "clip.mp4", "size": len(data)}).json()
+    assert client.post(f"/uploads/{empty['upload_id']}/analyze", json={}).status_code == 422
+
+
+def test_chunks_can_arrive_out_of_order(tmp_path, samples, monkeypatch):
+    import hashlib
+    from backend import gateway
+    monkeypatch.setattr(gateway, "CHUNK_BYTES", 100_000)
+    data = (samples / "clip.mp4").read_bytes()
+    with TestClient(create_app(make_cfg(tmp_path))) as c:
+        start = c.post("/uploads", json={"name": "clip.mp4", "size": len(data)}).json()
+        parts = [data[i:i + 100_000] for i in range(0, len(data), 100_000)]
+        for index in reversed(range(len(parts))):
+            assert c.put(f"/uploads/{start['upload_id']}/{index}", content=parts[index]).status_code == 200
+        case = c.post(f"/uploads/{start['upload_id']}/analyze", json={}).json()
+        assert case["file"]["sha256"] == hashlib.sha256(data).hexdigest()
 
 
 def test_fusion_uses_aggregates_and_softens_subthreshold_scores(cfg):

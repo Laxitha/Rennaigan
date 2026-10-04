@@ -32,6 +32,7 @@ from . import __version__, assess, config, media, rag
 from .detectors import run_module, service_up
 from .fusion import fuse
 from .store import Store, now_iso, result_digest
+from common.utils import file_sha256
 
 CASE_ID = re.compile(r"^RG-\d{4}-\d{5,}$")
 BATCH_ID = re.compile(r"^BT-[0-9a-f]{12}$")
@@ -39,7 +40,7 @@ LOCAL_ORIGIN = r"^https?://(localhost|127\.\d+\.\d+\.\d+|\[::1\]|10\.\d+\.\d+\.\
 SUMMARY_KEYS = ("id", "created_at", "mode", "batch_id", "file", "media", "trust_score", "label", "label_reason",
                 "evidence_weight", "module_scores", "total_findings", "runtime_s", "review", "modules", "verdict")
 MAX_ARTIFACT_BYTES = 50 * 1024 * 1024
-CHUNK_BYTES = 32 * 1024 * 1024
+CHUNK_BYTES = 8 * 1024 * 1024
 
 
 class ReviewBody(BaseModel):
@@ -385,42 +386,47 @@ def create_app(cfg: dict | None = None) -> FastAPI:
                 stale["path"].unlink(missing_ok=True)
                 uploads.pop(stale_id, None)
         upload_id = secrets.token_hex(12)
-        uploads[upload_id] = {"name": name, "size": body.size, "received": 0, "next": 0, "sha": hashlib.sha256(),
+        uploads[upload_id] = {"name": name, "size": body.size, "chunks": set(),
                               "path": tmp_dir / f"{upload_id}.{ext}", "touched": time.monotonic()}
         return {"upload_id": upload_id, "chunk_bytes": CHUNK_BYTES}
 
     @app.put("/uploads/{upload_id}/{index}")
     async def upload_chunk(upload_id: str, index: int, request: Request):
+        """Store one chunk at its own offset. Chunks may arrive in any order and in parallel."""
         up = uploads.get(upload_id)
         if up is None:
             raise HTTPException(404, "Unknown or expired upload.")
-        if index == up["next"] - 1:  # a retry of the chunk already stored
-            return {"received": up["received"]}
-        if index != up["next"]:
-            raise HTTPException(409, f"Expected chunk {up['next']}.")
-        size = 0
-        with open(up["path"], "ab") as out:
-            async for piece in request.stream():
-                size += len(piece)
-                if size > CHUNK_BYTES or up["received"] + size > up["size"]:
-                    out.truncate(up["received"])
-                    raise HTTPException(413, "Chunk is larger than announced.")
-                up["sha"].update(piece)
-                out.write(piece)
-        up.update(received=up["received"] + size, next=index + 1, touched=time.monotonic())
-        return {"received": up["received"]}
+        offset = index * CHUNK_BYTES
+        if index < 0 or offset >= up["size"]:
+            raise HTTPException(409, "Chunk index is outside the file.")
+        expected = min(CHUNK_BYTES, up["size"] - offset)
+        data = bytearray()
+        async for piece in request.stream():
+            data.extend(piece)
+            if len(data) > expected:
+                raise HTTPException(413, "Chunk is larger than announced.")
+        if len(data) != expected:
+            raise HTTPException(422, f"Chunk {index} should be {expected} bytes, got {len(data)}.")
+        with open(up["path"], "r+b" if up["path"].exists() else "wb") as out:
+            out.seek(offset)
+            out.write(data)
+        up["chunks"].add(index)
+        up["touched"] = time.monotonic()
+        return {"received": len(up["chunks"])}
 
     @app.post("/uploads/{upload_id}/analyze")
     async def analyze_upload_id(upload_id: str, body: UploadFinish):
         up = uploads.pop(upload_id, None)
         if up is None:
             raise HTTPException(404, "Unknown or expired upload.")
-        if up["received"] != up["size"]:
+        total = -(-up["size"] // CHUNK_BYTES)
+        if len(up["chunks"]) != total or not up["path"].exists() or up["path"].stat().st_size != up["size"]:
             up["path"].unlink(missing_ok=True)
-            raise HTTPException(422, f"Upload is incomplete: {up['received']} of {up['size']} bytes received.")
+            raise HTTPException(422, f"Upload is incomplete: {len(up['chunks'])} of {total} chunks received.")
         if body.batch_id is not None and not BATCH_ID.match(body.batch_id):
             raise HTTPException(422, "batch_id must look like BT-<12 hex characters>.")
-        ingested = await probe_received(up["path"], up["name"], up["sha"].hexdigest(), up["size"])
+        digest = await asyncio.to_thread(file_sha256, up["path"])
+        ingested = await probe_received(up["path"], up["name"], digest, up["size"])
         return stream_case(ingested, body.mode, body.batch_id)
 
     @app.post("/bulk")

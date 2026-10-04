@@ -26,6 +26,7 @@ import numpy as np
 import torch
 from scipy.io import wavfile
 
+from common import budget
 from common.schema import Finding, ModuleResult
 from common.utils import file_sha256
 
@@ -36,7 +37,6 @@ DEVICE = None
 SAMPLE_RATE = 16000
 WINDOW = 5 * SAMPLE_RATE
 MAX_SECONDS = 900
-MAX_WINDOWS = 120
 BATCH_SIZE = 8
 RAW_DECISION_POINT = 0.25   # raw score that best separated human from synthetic speech
 SILENCE_RMS = 0.004
@@ -91,8 +91,8 @@ def analyze(file_path: Path, audio_path: Path | None = None) -> ModuleResult:
 
     extractor, model, fake_index = load_model()
 
-    # Long recordings: widen the spacing so the work stays bounded.
-    stride = max(WINDOW, len(audio) // MAX_WINDOWS)
+    # Long recordings: windows are spread evenly over the whole file so the work stays bounded.
+    stride = max(WINDOW, len(audio) // budget.get()["voice_windows"])
     starts = [s for s in range(0, max(len(audio) - WINDOW // 2, 1), stride)]
     windows = [(s, audio[s:s + WINDOW]) for s in starts]
     voiced = [(s, w) for s, w in windows if float(np.sqrt(np.mean(w ** 2))) >= SILENCE_RMS]
