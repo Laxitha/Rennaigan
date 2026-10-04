@@ -64,7 +64,7 @@ fusion:
   # Measured with scripts/evaluate.py on 120 labelled images: used alone, the face-swap and
   # splicing detectors flag ordinary photos. Their score is capped unless another detector agrees.
   # The rule-based motion checks fired on genuine footage too, so each needs a second one to agree.
-  needs_corroboration: {sbi: 0.3, trufor: 0.3, head_pose: 0.2, smoothness: 0.2, optical_flow: 0.2, identity_drift: 0.2, blink: 0.2}
+  needs_corroboration: {sbi: 0.3, trufor: 0.3, syncnet: 0.25, head_pose: 0.2, smoothness: 0.2, optical_flow: 0.2, identity_drift: 0.2, blink: 0.2}
 
 labels:
   low_risk: [70, 100]

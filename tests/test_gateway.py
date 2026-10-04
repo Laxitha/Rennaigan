@@ -92,6 +92,23 @@ def test_fusion_unavailable_modules_are_not_counted_as_clean(cfg):
     assert out["trust_score"] is None  # metadata alone must not read as a clean result
 
 
+def test_face_swap_with_clean_audio_is_not_averaged_away(cfg):
+    runs = {"video": run_of("ok", 1.0, ("sbi_video", 0.85)), "audio": run_of("ok", 1.0, ("voice", 0.08)),
+            "motion": run_of("ok", 1.0), "metadata": run_of("ok", 1.0)}
+    out = fuse(runs, ["video", "audio", "motion", "metadata"], "public", cfg)
+    assert out["label"] == "High manipulation indicators" and out["trust_score"] == 15.0
+
+
+def test_lip_sync_alone_does_not_decide(cfg):
+    # Voice-over and off-screen speakers are out of sync in genuine videos.
+    runs = {"video": run_of("ok", 1.0, ("syncnet", 0.69)), "audio": run_of("ok", 1.0, ("voice", 0.1)),
+            "motion": run_of("ok", 1.0), "metadata": run_of("ok", 1.0)}
+    out = fuse(runs, ["video", "audio", "motion", "metadata"], "public", cfg)
+    assert out["label"] == "Low risk" and out["trust_score"] == 75.0
+    runs["video"] = run_of("ok", 1.0, ("syncnet", 0.69), ("lipforensics", 0.8))
+    assert fuse(runs, ["video", "audio", "motion", "metadata"], "public", cfg)["label"] == "High manipulation indicators"
+
+
 def test_clip_too_short_to_judge_is_uncertain(cfg):
     runs = {"audio": {"info": {"status": "ok"}, "coverage": 1.0, "findings": [
                 {"model": "voice", "score": 0.0, "kind": "info", "note": "no_usable_speech: 1.2 s of audio is too short to judge"}]},

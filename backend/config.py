@@ -66,7 +66,7 @@ DEFAULTS = {
         "heuristic_score_cap": {"motion": 0.4, "metadata": 0.2},
         # Detectors that raise alarms on ordinary photos when used alone (measured with
         # scripts/evaluate.py). Their score is capped unless a second detector agrees.
-        "needs_corroboration": {"sbi": 0.3, "trufor": 0.3, "head_pose": 0.2, "smoothness": 0.2, "optical_flow": 0.2, "identity_drift": 0.2, "blink": 0.2},
+        "needs_corroboration": {"sbi": 0.3, "trufor": 0.3, "syncnet": 0.25, "head_pose": 0.2, "smoothness": 0.2, "optical_flow": 0.2, "identity_drift": 0.2, "blink": 0.2},
     },
     "labels": {"low_risk": [70, 100], "review": [40, 69], "high_manipulation": [0, 39]},
     "weights_sha256": {},

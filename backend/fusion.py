@@ -140,6 +140,13 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
                 "label_reason": "No detector produced evidence for this file, so no trust score was computed."}
 
     weighted = sum(scores[m] * weights.get(m, 0.0) * coverage[m] for m in scores) / live_weight
+    # A video is examined by two learned modules that look for different things. A face swap
+    # with its original soundtrack has a clean audio score, and averaging the two called such
+    # a file "uncertain" (seen live: face-swap detector at 0.85, trust score 62). The stronger
+    # of the two stands; it is not made weaker by the other finding nothing.
+    learned_scores = [s for m, s in scores.items() if m not in fusion_cfg.get("heuristic_modules", [])]
+    if len(learned_scores) >= 2:
+        weighted = max(weighted, max(learned_scores))
     trust = 100.0 * (1.0 - weighted)
     capped = any(s >= fusion_cfg["strong_signal_cap"] for s in scores.values())
     if capped:
