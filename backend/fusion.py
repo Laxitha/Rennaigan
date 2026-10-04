@@ -143,7 +143,9 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
     trust = 100.0 * (1.0 - weighted)
     capped = any(s >= fusion_cfg["strong_signal_cap"] for s in scores.values())
     if capped:
-        trust = min(trust, float(fusion_cfg["strong_signal_max_trust"]))
+        # A detector this sure decides the score. Averaging it with modules that found nothing
+        # (metadata, motion) gave "deepfake, 90% confident" next to a trust score of 27.
+        trust = min(trust, float(fusion_cfg["strong_signal_max_trust"]), 100.0 * (1.0 - max(scores.values())))
     trust = round(trust, 1)
 
     reasons = []
@@ -152,7 +154,7 @@ def fuse(runs: dict[str, dict], applicable: list[str], mode: str, cfg: dict) -> 
     else:
         reasons.append("No detector that ran reported a manipulation signal.")
     if capped:
-        reasons.append(f"One module is above {fusion_cfg['strong_signal_cap']}, so the trust score is capped at {fusion_cfg['strong_signal_max_trust']}.")
+        reasons.append(f"One module is above {fusion_cfg['strong_signal_cap']}, so the trust score follows that module instead of the average.")
 
     primary = applicable[0] if applicable else None
     if primary in ("image", "video", "audio") and coverage.get(primary, 0) <= 0:
