@@ -78,7 +78,7 @@ def test_fusion_strong_signal_caps_trust(cfg):
     runs = {"audio": run_of("ok", 1.0, ("ssl_aasist", 0.96)), "video": run_of("ok", 1.0), "motion": run_of("ok", 1.0),
             "metadata": run_of("ok", 1.0, ("ffprobe", 0.2))}
     out = fuse(runs, ["video", "audio", "motion", "metadata"], "public", cfg)
-    assert out["trust_score"] == 30.0
+    assert out["trust_score"] == 4.0  # follows the 0.96 detector, not the average
     assert out["label"] == "High manipulation indicators"
     assert "ssl_aasist" in out["label_reason"]
 
