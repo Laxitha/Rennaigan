@@ -113,12 +113,12 @@ export interface CaseFile {
 
 export type VerdictKind = 'real' | 'deepfake' | 'uncertain'
 
-/** The final call on a file. `claude` when the reasoned assessment ran, `fusion` otherwise. */
+/** The final call on a file. `gemini` or `claude` when the reasoned assessment ran, `fusion` otherwise. */
 export interface Verdict {
   verdict: VerdictKind
   /** 0-100: how likely the verdict is correct given the evidence gathered. */
   confidence: number
-  source: 'claude' | 'fusion'
+  source: 'gemini' | 'claude' | 'fusion'
   headline: string
 }
 

@@ -1,8 +1,9 @@
-"""Final verdict for a case: a rule-based one from fusion, and a reasoned one from Claude.
+"""Final verdict for a case: a rule-based one from fusion, and a reasoned one from a language model.
 
-The detectors and fusion produce the numbers. Claude reads the cross-detector findings, the
-retrieved detector notes and similar past cases, optionally looks at the media, and explains
-what they add up to. Without an API key the rule-based verdict is used on its own.
+The detectors and fusion produce the numbers. The model (Gemini, or Claude) reads the
+cross-detector findings, the retrieved detector notes and similar past cases, optionally looks
+at the media, and explains what they add up to. Without an API key the rule-based verdict is
+used on its own.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from . import knowledge, rag
 from .store import now_iso
 
 DEFAULT_MODEL = "claude-opus-5-5"
+GEMINI_MODEL = "gemini-3.8-flash"
 LEARNED_MODULES = ("image", "video", "audio")
 
 SYSTEM = """You are the reporting analyst in a media-forensics pipeline. Automated detectors have \
@@ -98,14 +100,35 @@ SCHEMA = {
 }
 
 
-def available() -> bool:
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        return False
-    try:
-        import anthropic  # noqa: F401
-    except ImportError:
-        return False
-    return True
+def provider(preferred: str = "auto") -> str | None:
+    """Which service writes the reasoned verdict: "gemini", "claude", or None when neither can.
+
+    "auto" uses Gemini when a Gemini key is set, otherwise Claude.
+    """
+    def gemini() -> bool:
+        if not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+            return False
+        try:
+            from google import genai  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    def claude() -> bool:
+        if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+            return False
+        try:
+            import anthropic  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    order = {"gemini": [gemini], "claude": [claude]}.get(preferred, [gemini, claude])
+    return next((check.__name__ for check in order if check()), None)
+
+
+def available(preferred: str = "auto") -> bool:
+    return provider(preferred) is not None
 
 
 def fusion_verdict(fused: dict, cfg: dict) -> dict:
@@ -208,18 +231,11 @@ def build_evidence(doc: dict, earlier_cases: list[dict]) -> dict:
     }
 
 
-async def assess(doc: dict, earlier_cases: list[dict], model: str = DEFAULT_MODEL, images: list[bytes] | None = None,
-                 frames: list[dict] | None = None) -> dict:
-    """Ask Claude for a reasoned verdict. Raises on API failure; the caller records the error."""
+async def _ask_claude(evidence: dict, images: list[bytes], model: str) -> tuple[str, str, dict]:
     import anthropic
 
-    evidence = build_evidence(doc, earlier_cases)
-    evidence["media_attached"] = (f"{len(images)} image(s): the file itself or frames spread across the video" if images
-                                  else "none: reason from the detector findings only")
-    if images and frames:
-        evidence["attached_frames"] = [{"image": i + 1, **frame} for i, frame in enumerate(frames)]
     content = [{"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                                            "data": base64.standard_b64encode(img).decode()}} for img in images or []]
+                                            "data": base64.standard_b64encode(img).decode()}} for img in images]
     content.append({"type": "text", "text": json.dumps(evidence, indent=1)})
     async with anthropic.AsyncAnthropic() as client:
         response = await client.beta.messages.create(
@@ -239,9 +255,62 @@ async def assess(doc: dict, earlier_cases: list[dict], model: str = DEFAULT_MODE
     text = next((b.text for b in response.content if b.type == "text"), None)
     if text is None:
         raise RuntimeError("the model returned no assessment")
-    result = json.loads(text)
+    return text, response.model, {"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens}
 
-    result["confidence"] = int(min(max(result["confidence"], 0), 100))
+
+def _plain_schema(node):
+    """The schema without "additionalProperties", which Gemini's structured output does not take."""
+    if isinstance(node, dict):
+        return {k: _plain_schema(v) for k, v in node.items() if k != "additionalProperties"}
+    return [_plain_schema(v) for v in node] if isinstance(node, list) else node
+
+
+async def _ask_gemini(evidence: dict, images: list[bytes], model: str) -> tuple[str, str, dict]:
+    import asyncio
+
+    from google import genai
+
+    parts = [{"type": "image", "data": base64.standard_b64encode(img).decode(), "mime_type": "image/jpeg"} for img in images]
+    parts.append({"type": "text", "text": json.dumps(evidence, indent=1)})
+
+    def call():
+        client = genai.Client()  # reads GEMINI_API_KEY or GOOGLE_API_KEY
+        if not hasattr(client, "interactions"):
+            raise RuntimeError("the installed google-genai package is too old: pip install -U google-genai")
+        return client.interactions.create(
+            model=model,
+            input=parts,
+            system_instruction=SYSTEM,
+            response_format={"type": "text", "mime_type": "application/json", "schema": _plain_schema(SCHEMA)},
+            store=False,  # the case evidence and frames are not kept on Google's side after the call
+        )
+
+    interaction = await asyncio.to_thread(call)
+    text = getattr(interaction, "output_text", None)
+    if not text:
+        raise RuntimeError(f"the model returned no assessment (status: {getattr(interaction, 'status', 'unknown')})")
+    usage = getattr(interaction, "usage", None)
+    return text, model, {"input_tokens": getattr(usage, "total_input_tokens", None), "output_tokens": getattr(usage, "total_output_tokens", None)}
+
+
+async def assess(doc: dict, earlier_cases: list[dict], model: str = DEFAULT_MODEL, images: list[bytes] | None = None,
+                 frames: list[dict] | None = None, via: str = "claude") -> dict:
+    """Ask the model for a reasoned verdict. Raises on API failure; the caller records the error."""
+    evidence = build_evidence(doc, earlier_cases)
+    evidence["media_attached"] = (f"{len(images)} image(s): the file itself or frames spread across the video" if images
+                                  else "none: reason from the detector findings only")
+    if images and frames:
+        evidence["attached_frames"] = [{"image": i + 1, **frame} for i, frame in enumerate(frames)]
+    text, answered_by, usage = await (_ask_gemini if via == "gemini" else _ask_claude)(evidence, images or [], model)
+    try:
+        result = json.loads(text)
+    except ValueError:
+        raise RuntimeError("the model did not return the assessment in the expected format")
+    missing = [key for key in SCHEMA["required"] if key not in result]
+    if missing or result["verdict"] not in ("real", "deepfake", "uncertain"):
+        raise RuntimeError(f"the assessment is incomplete (missing or invalid: {', '.join(missing) or 'verdict'})")
+
+    result["confidence"] = int(min(max(int(result["confidence"]), 0), 100))
     # Enforced here as well as in the prompt: missing evidence can never be reported as "real".
     if doc["label"] == "Inconclusive" and result["verdict"] == "real":
         result["verdict"] = "uncertain"
@@ -249,9 +318,10 @@ async def assess(doc: dict, earlier_cases: list[dict], model: str = DEFAULT_MODE
         result["caveats"].append("Too few detectors produced evidence to call this file real, so the verdict was set to uncertain.")
     return {
         **result,
-        "model": response.model,
+        "model": answered_by,
+        "provider": via,
         "generated_at": now_iso(),
         "similar_cases_used": [c["case"] for c in evidence["similar_earlier_cases"]],
         "media_reviewed": len(images or []),
-        "usage": {"input_tokens": response.usage.input_tokens, "output_tokens": response.usage.output_tokens},
+        "usage": usage,
     }

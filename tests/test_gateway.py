@@ -317,8 +317,8 @@ def test_fusion_verdict_levels(cfg):
 
 
 def test_case_without_api_key_uses_fusion_verdict(client, samples, monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     case = upload(client, samples / "photo.jpg").json()
     assert case["verdict"]["source"] == "fusion" and case["assessment"] is None
     assert client.get("/health").json()["assessment"]["enabled"] is False
@@ -326,17 +326,51 @@ def test_case_without_api_key_uses_fusion_verdict(client, samples, monkeypatch):
     assert client.get("/cases").json()["cases"][0]["verdict"]["verdict"] == case["verdict"]["verdict"]
 
 
+def test_gemini_writes_the_verdict_when_its_key_is_set(client, samples, monkeypatch):
+    """The Gemini call is faked at the SDK boundary: this checks what is sent and how the answer is used."""
+    import json, sys, types
+    sent = {}
+
+    class Interactions:
+        def create(self, **kwargs):
+            sent.update(kwargs)
+            answer = {"verdict": "real", "confidence": 97, "headline": "Nothing was found.", "explanation": "e",
+                      "evidence": [{"detector": "visual review", "observation": "o", "direction": "neutral"}],
+                      "caveats": [], "recommendation": "r"}
+            return types.SimpleNamespace(output_text=json.dumps(answer), status="completed", usage=None)
+
+    genai = types.SimpleNamespace(Client=lambda: types.SimpleNamespace(interactions=Interactions()))
+    monkeypatch.setitem(sys.modules, "google", types.SimpleNamespace(genai=genai))
+    monkeypatch.setitem(sys.modules, "google.genai", genai)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-real")  # Gemini is preferred when both are set
+
+    health = client.get("/health").json()["assessment"]
+    assert (health["enabled"], health["provider"], health["model"]) == (True, "gemini", "gemini-3.8-flash")
+
+    case = upload(client, samples / "photo.jpg").json()
+    assert case["verdict"]["source"] == "gemini" and case["assessment"]["model"] == "gemini-3.8-flash"
+    # a thin case can never be called real, whatever the model answered
+    assert case["verdict"]["verdict"] == ("uncertain" if case["label"] == "Inconclusive" else "real")
+    assert case["verdict"]["confidence"] <= 97
+    assert sent["model"] == "gemini-3.8-flash" and sent["store"] is False and "media-forensics" in sent["system_instruction"]
+    assert sent["response_format"]["mime_type"] == "application/json"
+    assert "additionalProperties" not in json.dumps(sent["response_format"]["schema"])
+    assert sent["input"][-1]["type"] == "text" and "fused_result" in sent["input"][-1]["text"]
+    assert "assessment.generated" in [e["action"] for e in case["audit"]]
+
+
 def test_claude_assessment_is_recorded_and_sealed(client, samples, monkeypatch):
     from backend import assess
     seen = {}
 
-    async def fake_assess(doc, earlier, model, images=None, frames=None):
+    async def fake_assess(doc, earlier, model, images=None, frames=None, via="claude"):
         seen["evidence"] = assess.build_evidence(doc, earlier)
         return {"verdict": "deepfake", "confidence": 71, "headline": "Voice detector flags synthetic speech.",
                 "explanation": "e", "evidence": [], "caveats": [], "recommendation": "r", "model": model,
                 "generated_at": "t", "similar_cases_used": [], "usage": {"input_tokens": 1, "output_tokens": 1}}
 
-    monkeypatch.setattr(assess, "available", lambda: True)
+    monkeypatch.setattr(assess, "provider", lambda preferred="auto": "claude")
     monkeypatch.setattr(assess, "assess", fake_assess)
     case = upload(client, samples / "voice.wav").json()
     assert case["verdict"] == {"verdict": "deepfake", "confidence": 71, "source": "claude", "headline": "Voice detector flags synthetic speech."}
@@ -350,7 +384,7 @@ def test_claude_assessment_is_recorded_and_sealed(client, samples, monkeypatch):
     assert [e["action"] for e in again["audit"]][-2:] == ["assessment.generated", "case.sealed"]
     assert client.get(f"/cases/{case['id']}/audit/verify").json()["intact"]
 
-    async def failing(doc, earlier, model, images=None, frames=None):
+    async def failing(doc, earlier, model, images=None, frames=None, via="claude"):
         raise RuntimeError("rate limited")
     monkeypatch.setattr(assess, "assess", failing)
     failed = upload(client, samples / "photo.jpg").json()

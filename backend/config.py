@@ -47,8 +47,11 @@ DEFAULTS = {
         "metadata": {"url": "http://127.0.0.1:8004"},
         "motion": {"url": "http://127.0.0.1:8005"},
     },
-    # Reasoned verdict written by Claude from the detector findings. Needs ANTHROPIC_API_KEY.
-    "assessment": {"enabled": True, "model": "claude-opus-5-5", "timeout_s": 180, "send_media": False},
+    # Reasoned verdict written by a language model from the detector findings. "auto" uses Gemini
+    # when GEMINI_API_KEY is set, otherwise Claude (ANTHROPIC_API_KEY). send_media also shares the
+    # image, or a few video frames, with that provider.
+    "assessment": {"enabled": True, "provider": "auto", "model": "claude-opus-5-5", "gemini_model": "gemini-3.8-flash",
+                   "timeout_s": 180, "send_media": False},
     "preprocessing": {"max_upload_mb": 1024},
     "thresholds": {},
     "temperatures": {},

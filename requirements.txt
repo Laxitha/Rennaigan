@@ -33,3 +33,4 @@ pyyaml
 
 # Tests
 pytest
+google-genai  # reasoned verdict via Gemini (optional; anthropic is the alternative)

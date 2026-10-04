@@ -267,7 +267,7 @@ export default function Analyze() {
                       {realCase.assessment?.explanation || realCase.verdict?.headline || realCase.label_reason}
                     </p>
                     <p className="t-meta mt-2">
-                      {realCase.verdict?.source === 'claude'
+                      {realCase.verdict && realCase.verdict.source !== 'fusion'
                         ? `Reasoned from the detector findings by ${realCase.assessment?.model}. Detector result: ${realCase.label}.`
                         : `Rule-based verdict from the fused detector scores (${realCase.label}).`}
                     </p>

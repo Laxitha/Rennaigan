@@ -115,7 +115,11 @@ def restart() -> None:
     stop()
     repair_weights()
     env = dict(os.environ, PYTHONUNBUFFERED="1")
-    print("Claude assessment key:", "present" if env.get("ANTHROPIC_API_KEY") else "not set (rule-based verdict only)")
+    key = "Gemini" if env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY") else "Claude" if env.get("ANTHROPIC_API_KEY") else None
+    print("Reasoned verdict:", f"{key} key present" if key else "no API key set (rule-based verdict only)")
+    if key == "Gemini":
+        # the Interactions API needs a recent client; Colab's preinstalled one can be older
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "google-genai"])
     LOG.parent.mkdir(parents=True, exist_ok=True)
     # start_new_session: the backend must outlive the notebook cell that launched it
     subprocess.Popen([sys.executable, "start.py"], cwd=ROOT, env=env, stdout=open(LOG, "w"), stderr=subprocess.STDOUT,

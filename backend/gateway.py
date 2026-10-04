@@ -77,6 +77,11 @@ def create_app(cfg: dict | None = None) -> FastAPI:
     max_bytes = int(cfg["preprocessing"]["max_upload_mb"]) * 1024 * 1024
     urls = {m: cfg["services"][m]["url"].rstrip("/") for m in config.MODULES}
     assessment_cfg = cfg["assessment"]
+
+    def reviewer() -> tuple[str | None, str]:
+        """The service that writes the reasoned verdict, and the model it uses."""
+        via = assess.provider(assessment_cfg.get("provider", "auto")) if assessment_cfg["enabled"] else None
+        return via, assessment_cfg.get("gemini_model", assess.GEMINI_MODEL) if via == "gemini" else assessment_cfg["model"]
     uploads: dict[str, dict] = {}
     progress: dict[str, dict] = {}
 
@@ -309,7 +314,7 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             "artifacts": artifacts,
             "gateway_version": __version__,
         }
-        if assessment_cfg["enabled"] and assess.available():
+        if reviewer()[0]:
             report(progress_id, 90, "assessment", "Writing the reasoned verdict")
         await add_verdict(doc)
         report(progress_id, 97, "sealing", "Sealing the audit trail")
@@ -325,7 +330,8 @@ def create_app(cfg: dict | None = None) -> FastAPI:
         st = store()
         doc["fusion_verdict"] = doc["verdict"] = assess.fusion_verdict(doc, cfg)
         doc["assessment"], doc["assessment_error"] = None, None
-        if not (assessment_cfg["enabled"] and assess.available()):
+        via, model = reviewer()
+        if not via:
             return
         t0 = time.monotonic()
         earlier = [c for c in st.list_cases(200)[1] if c["id"] != doc["id"]]
@@ -341,15 +347,15 @@ def create_app(cfg: dict | None = None) -> FastAPI:
                     images = [shot for shot in shots if shot]
                 elif source.is_file():
                     images = await asyncio.to_thread(media.preview_images, source, doc["media"])
-            result = await asyncio.wait_for(assess.assess(doc, earlier, assessment_cfg["model"], images, frames),
+            result = await asyncio.wait_for(assess.assess(doc, earlier, model, images, frames, via),
                                             timeout=float(assessment_cfg["timeout_s"]))
         except Exception as exc:
             doc["assessment_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-            st.append_audit(doc["id"], "assessment.failed", doc["assessment_error"], actor=assessment_cfg["model"],
+            st.append_audit(doc["id"], "assessment.failed", doc["assessment_error"], actor=model,
                             duration_ms=int((time.monotonic() - t0) * 1000))
             return
         doc["assessment"] = result
-        doc["verdict"] = {"verdict": result["verdict"], "confidence": result["confidence"], "source": "claude", "headline": result["headline"]}
+        doc["verdict"] = {"verdict": result["verdict"], "confidence": result["confidence"], "source": via, "headline": result["headline"]}
         st.append_audit(doc["id"], "assessment.generated",
                         f"{result['verdict']} at {result['confidence']}% confidence. {result['headline'][:200]}",
                         actor=result["model"], duration_ms=int((time.monotonic() - t0) * 1000),
@@ -374,7 +380,7 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             "tools": {t: shutil.which(t) is not None for t in ("ffmpeg", "ffprobe", "exiftool", "c2patool")},
             "gateway": {"version": __version__, "cases": store().count_cases(), "keep_media": bool(gw["keep_media"])},
             "rag": {"enabled": True, "retriever": rag.RETRIEVER},
-            "assessment": {"enabled": bool(assessment_cfg["enabled"] and assess.available()), "model": assessment_cfg["model"],
+            "assessment": {"enabled": reviewer()[0] is not None, "provider": reviewer()[0], "model": reviewer()[1],
                            "send_media": bool(assessment_cfg["send_media"])},
         }
 
@@ -560,8 +566,8 @@ def create_app(cfg: dict | None = None) -> FastAPI:
     async def reassess(case_id: str):
         """Generate the reasoned verdict again, for example after an API key was added."""
         doc = load_case(case_id)
-        if not (assessment_cfg["enabled"] and assess.available()):
-            raise HTTPException(503, "Reasoned assessment is not configured. Set ANTHROPIC_API_KEY on the gateway and install the anthropic package.")
+        if not reviewer()[0]:
+            raise HTTPException(503, "Reasoned assessment is not configured. Set GEMINI_API_KEY (or ANTHROPIC_API_KEY) on the gateway.")
         doc.pop("audit", None)
         await add_verdict(doc)
         store().save_case(doc, int(case_id.rsplit("-", 1)[1]))
