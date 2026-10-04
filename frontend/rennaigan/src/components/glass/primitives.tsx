@@ -1,10 +1,10 @@
 import {
-  forwardRef, useId, useLayoutEffect, useRef, useState,
+  forwardRef, useEffect, useId, useLayoutEffect, useRef, useState,
   type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type KeyboardEvent, type ReactNode, type Ref,
 } from 'react'
 import { Link } from 'react-router-dom'
 import { cn } from '@/lib/cn'
-import { d, EASE, ensureFinished, gsap, useGSAP } from '@/lib/motion'
+import { motionState } from '@/lib/motion'
 import type { Tone } from '@/types'
 
 /* ------------------------------ Panel / Card ------------------------------ */
@@ -111,21 +111,23 @@ export function GlassBadge({ tone = 'neutral', children, className }: { tone?: T
 /* --------------------------------- Metric --------------------------------- */
 
 export function CountUp({ value, decimals = 0, className }: { value: number; decimals?: number; className?: string }) {
-  const ref = useRef<HTMLSpanElement>(null)
   const fmt = (v: number) => v.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
-  useGSAP(() => {
-    const state = { v: 0 }
-    // ensureFinished: a throttled frame ticker must never leave a partial number on screen
-    ensureFinished(gsap.to(state, {
-      v: value, duration: d(1.1), ease: EASE.out,
-      onUpdate: () => { if (ref.current) ref.current.textContent = fmt(state.v) },
-    }))
-    // The number is evidence, the animation is not: whatever happens to the tween (hidden tab,
-    // throttled frames), the real value is on screen shortly after.
-    const settle = setTimeout(() => { if (ref.current) ref.current.textContent = fmt(value) }, 1600)
-    return () => clearTimeout(settle)
-  }, [value, decimals])
-  return <span ref={ref} className={cn('t-num', className)}>{fmt(value)}</span>
+  // The number is evidence, the animation is not. React owns the text and it starts at the real
+  // value; the count-up only runs while frames are actually being drawn, and a timer ends it.
+  const [shown, setShown] = useState(value)
+  useEffect(() => {
+    setShown(value)
+    if (motionState.reduced || document.hidden || !value) return
+    const start = performance.now()
+    let frame = requestAnimationFrame(function tick(now) {
+      const t = Math.min(1, (now - start) / 900)
+      setShown(value * (1 - Math.pow(1 - t, 4)))
+      if (t < 1) frame = requestAnimationFrame(tick)
+    })
+    const settle = setTimeout(() => { cancelAnimationFrame(frame); setShown(value) }, 1200)
+    return () => { cancelAnimationFrame(frame); clearTimeout(settle) }
+  }, [value])
+  return <span className={cn('t-num', className)}>{fmt(shown)}</span>
 }
 
 interface MetricProps { label: string; value: number; suffix?: string; hint?: string; tone?: Tone; decimals?: number; className?: string }

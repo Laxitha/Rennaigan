@@ -8,7 +8,7 @@ import { cn } from '@/lib/cn'
 import { bytes, fmtDateTime, shortHash, tc } from '@/lib/format'
 import { api } from '@/services/api'
 import { absUrl, useBackendUrl } from '@/services/backend'
-import { CopyButton, CountUp, GlassBadge, GlassButton, GlassInspector, GlassModal, GlassPanel, useToast } from '@/components/glass'
+import { CopyButton, GlassBadge, GlassButton, GlassInspector, GlassModal, GlassPanel, useToast } from '@/components/glass'
 import { MediaFrame, RegionBox } from '@/components/forensic/MediaFrame'
 import { Spectrogram } from '@/components/forensic/Spectrogram'
 import { LevelBadge, SEVERITY_TONE, VERDICT_META, VerdictBadge } from '@/components/forensic/meta'
@@ -54,7 +54,7 @@ function ConfidenceBand({ value, low, high }: { value: number; low: number; high
         <span className="absolute inset-y-0 rounded-full bg-accent/35" style={{ left: `${low}%`, width: `${high - low}%` }} />
         <span className="absolute top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-fg" style={{ left: `${value}%` }} />
       </div>
-      <div className="t-mono mt-2 flex justify-between text-[0.6875rem] text-fg-3"><span>0</span><span>Range {low} to {high}</span><span>100</span></div>
+      <div className="t-mono mt-2 flex justify-between text-[0.6875rem] text-fg-3"><span>0 manipulated</span><span>Range {low} to {high}</span><span>authentic 100</span></div>
     </div>
   )
 }
@@ -190,9 +190,10 @@ export default function Report() {
         <div className="mt-6 grid gap-x-10 gap-y-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
           <div>
             <div className="flex items-baseline gap-2">
-              <CountUp value={inv.confidence} className="text-[4.5rem] font-[520] leading-none tracking-[-0.05em]" /><span className="text-2xl text-fg-2">%</span>
+              <span className="t-num text-[4.5rem] font-[520] leading-none tracking-[-0.05em]">{inv.confidence}</span><span className="text-2xl text-fg-2">%</span>
               <span className="t-label ml-3">Trust score ({inv.status})</span>
             </div>
+            <p className="t-meta mt-2">How authentic the file looks: 0 is manipulated, 100 is clean. The confidence beside the verdict is how sure that verdict is, so a deepfake has a low trust score and a high confidence.</p>
             <ConfidenceBand value={inv.confidence} low={Math.max(0, inv.confidence - 8)} high={Math.min(100, inv.confidence + 8)} />
             <p className="mt-4 max-w-[58ch] text-sm leading-relaxed text-fg-2">
               {caseFull?.label_reason || (inv.confidence > 70
