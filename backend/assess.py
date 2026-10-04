@@ -282,6 +282,8 @@ async def _ask_gemini(evidence: dict, images: list[bytes], model: str) -> tuple[
             input=parts,
             system_instruction=SYSTEM,
             response_format={"type": "text", "mime_type": "application/json", "schema": _plain_schema(SCHEMA)},
+            # The evidence is already scored and laid out; long deliberation only delays the report.
+            generation_config={"thinking_level": "low"},
             store=False,  # the case evidence and frames are not kept on Google's side after the call
         )
 

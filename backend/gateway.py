@@ -315,7 +315,7 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             "gateway_version": __version__,
         }
         if reviewer()[0]:
-            report(progress_id, 90, "assessment", "Writing the reasoned verdict")
+            report(progress_id, 90, "assessment", f"Writing the reasoned verdict with {reviewer()[1]} (up to {float(assessment_cfg['timeout_s']):.0f} s)")
         await add_verdict(doc)
         report(progress_id, 97, "sealing", "Sealing the audit trail")
         doc["runtime_s"] = round(time.monotonic() - t0, 3)
@@ -350,7 +350,9 @@ def create_app(cfg: dict | None = None) -> FastAPI:
             result = await asyncio.wait_for(assess.assess(doc, earlier, model, images, frames, via),
                                             timeout=float(assessment_cfg["timeout_s"]))
         except Exception as exc:
-            doc["assessment_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+            reason = (f"{model} did not answer within {float(assessment_cfg['timeout_s']):.0f} s" if isinstance(exc, asyncio.TimeoutError)
+                      else str(exc)[:300])
+            doc["assessment_error"] = f"{type(exc).__name__}: {reason}"
             st.append_audit(doc["id"], "assessment.failed", doc["assessment_error"], actor=model,
                             duration_ms=int((time.monotonic() - t0) * 1000))
             return
